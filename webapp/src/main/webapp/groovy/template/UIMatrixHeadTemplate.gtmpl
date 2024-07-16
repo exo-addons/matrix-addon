@@ -1,0 +1,12 @@
+<%
+  import org.exoplatform.social.webui.Utils;
+
+  def space = SpaceUtils.getSpaceByContext();
+  String matrixRoom = "";
+  if (space != null) {
+    matrixRoom = matrixService.getRoomBySpace();
+  }
+%>
+<script type="text/javascript">
+  matrixRoom = '<% matrixRoom %>';
+</script>
