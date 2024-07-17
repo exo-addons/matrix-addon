@@ -4,6 +4,16 @@
    xsi:schemaLocation="http://www.exoplatform.org/xml/ns/kernel_1_2.xsd http://www.exoplatform.org/xml/ns/kernel_1_2.xsd"
    xmlns="http://www.exoplatform.org/xml/ns/kernel_1_2.xsd">
 
+  <component>
+    <key>org.exoplatform.addons.matrix.rest.MatrixRest</key>
+    <type>org.exoplatform.addons.matrix.rest.MatrixRest</type>
+  </component>
+
+  <component>
+    <key>org.exoplatform.addons.matrix.services.MatrixService</key>
+    <type>org.exoplatform.addons.matrix.services.MatrixService</type>
+  </component>
+
   <external-component-plugins>
     <target-component>org.exoplatform.social.metadata.MetadataService</target-component>
     <component-plugin>
@@ -78,6 +88,24 @@
           </object>
         </object-param>
       </init-params>
+    </component-plugin>
+  </external-component-plugins>
+
+  <external-component-plugins>
+    <target-component>org.exoplatform.services.organization.OrganizationService</target-component>
+    <component-plugin>
+      <name>matrix.new.user.event.listener</name>
+      <set-method>addListenerPlugin</set-method>
+      <type>org.exoplatform.addons.matrix.listeners.MatrixUserListener</type>
+    </component-plugin>
+  </external-component-plugins>
+
+  <external-component-plugins>
+    <target-component>org.exoplatform.social.core.space.spi.SpaceService</target-component>
+    <component-plugin>
+      <name>matrix.space.listener</name>
+      <set-method>addSpaceListener</set-method>
+      <type>org.exoplatform.addons.matrix.listeners.MatrixSpaceListener</type>
     </component-plugin>
   </external-component-plugins>
 

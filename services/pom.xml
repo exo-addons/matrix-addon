@@ -37,18 +37,22 @@
 
   <dependencies>
     <dependency>
-      <groupId>io.meeds.social</groupId>
+      <groupId>org.exoplatform.social</groupId>
       <artifactId>social-component-api</artifactId>
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>io.meeds.social</groupId>
+      <groupId>org.exoplatform.social</groupId>
       <artifactId>social-component-core</artifactId>
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>io.meeds.social</groupId>
+      <groupId>org.exoplatform.social</groupId>
       <artifactId>social-component-service</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>commons-codec</groupId>
+      <artifactId>commons-codec</artifactId>
     </dependency>
   </dependencies>
 </project>
