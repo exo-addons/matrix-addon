@@ -14,10 +14,10 @@ const appId = 'matrixChatButton';
 const lang = window?.eXo?.env?.portal?.language || 'fr';
 const i18NUrl = `${eXo.env.portal.context}/${eXo.env.portal.rest}/i18n/bundle/locale.portlet.matrix-${lang}.json`;
 
-export function init(roomId) {
+export function init(roomId, serverName) {
   exoi18n.loadLanguageAsync(lang, i18NUrl).then(i18n => {
     Vue.createApp({
-      template: `<matrix-chat-button id="matrixChatButton" roomId="${roomId}"/>`,
+      template: `<matrix-chat-button id="matrixChatButton" roomId="${roomId}" serverName="${serverName}"/>`,
       vuetify: Vue.prototype.vuetifyOptions,
       i18n
     },

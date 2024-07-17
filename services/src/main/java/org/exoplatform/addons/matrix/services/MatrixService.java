@@ -10,23 +10,21 @@ import org.exoplatform.social.metadata.MetadataService;
 import org.exoplatform.social.metadata.model.MetadataItem;
 import org.exoplatform.social.metadata.model.MetadataKey;
 import org.exoplatform.social.metadata.model.MetadataObject;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-
-import java.io.InvalidObjectException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.exoplatform.addons.matrix.services.MatrixConstants.*;
 
-@Service
 public class MatrixService {
 
   private static final Log LOG = ExoLogger.getLogger(MatrixService.class);
 
-  @Autowired
   private MetadataService metadataService;
+
+  public MatrixService(MetadataService metadataService) {
+    this.metadataService = metadataService;
+  }
 
   public String getRomBySpace(Space space) throws ObjectNotFoundException, IllegalStateException {
     MetadataKey metadataKey = new MetadataKey(MATRIX_METADATA_TYPE, MATRIX_METADATA_NAME, 0);

@@ -6,8 +6,9 @@
             id="btnChatButton"
             :title="$t('exo.mattermost.chat.button.tooltip')"
             @click="openMatrixRoom($event)"
+            :color="color"
             icon>
-          <v-icon size="22" class="my-auto uiIconStatus icon-default-color fas fa-comments" />
+          <v-icon size="22" class="my-auto icon-default-color fas fa-comments" />
         </v-btn>
       </div>
     </div>
@@ -25,15 +26,15 @@
         default: '',
       },
     },
+    data: () => ({
+      color: 'grey',
+    }),
     methods: {
       openMatrixRoom(event){
         if (event){
           event.preventDefault();
           event.stopPropagation();
         }
-        console.log('Open Matrix room');
-        console.log(this.roomId);
-        this.serverName = 'matrix.exo.tn';
         const url = `https://matrix.to/#/${this.roomId}:${this.serverName}?via=${this.serverName}`;
         window.open(url, '_blank');
       }
