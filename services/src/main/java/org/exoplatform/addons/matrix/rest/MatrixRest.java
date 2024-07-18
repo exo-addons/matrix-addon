@@ -14,11 +14,9 @@ import org.exoplatform.services.rest.resource.ResourceContainer;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.space.model.Space;
 import org.exoplatform.social.core.space.spi.SpaceService;
-import org.exoplatform.social.metadata.MetadataService;
 
 import javax.annotation.security.RolesAllowed;
 import javax.ws.rs.GET;
-import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Response;
@@ -31,13 +29,10 @@ public class MatrixRest implements ResourceContainer {
 
   private final SpaceService    spaceService;
 
-  private final MetadataService metadataService;
-
   private final MatrixService   matrixService;
 
-  public MatrixRest(SpaceService spaceService, MetadataService metadataService, MatrixService matrixService) {
+  public MatrixRest(SpaceService spaceService, MatrixService matrixService) {
     this.spaceService = spaceService;
-    this.metadataService = metadataService;
     this.matrixService = matrixService;
   }
 
@@ -81,7 +76,7 @@ public class MatrixRest implements ResourceContainer {
     }
   }
 
-  @POST
+  @GET
   @RolesAllowed("users")
   @Operation(summary = "Set the matrix room bound to the current space", method = "POST", description = "Set the id of the matrix room bound to the current space")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -89,7 +84,8 @@ public class MatrixRest implements ResourceContainer {
       @ApiResponse(responseCode = "500", description = "Internal server error") })
   public Response linkSpaceToRoom(@QueryParam("spaceGroupId")
   String spaceGroupId, @QueryParam("roomId")
-  String roomId) {
+  String roomId, @QueryParam("create")
+  boolean create) {
     try {
       if (StringUtils.isBlank(spaceGroupId)) {
         LOG.error("Could not connect the space to a team, space name is missing");
@@ -97,8 +93,24 @@ public class MatrixRest implements ResourceContainer {
       }
 
       Space space = spaceService.getSpaceByGroupId("/spaces/" + spaceGroupId);
+
+      if (space == null) {
+        return Response.status(Response.Status.NOT_FOUND).entity("space with group Id " + spaceGroupId + "was not found").build();
+      }
+
+      String existingRoomId = matrixService.getRomBySpace(space);
+      if (StringUtils.isNotBlank(existingRoomId)) {
+        return Response.status(Response.Status.CONFLICT)
+                       .entity("space with group Id " + spaceGroupId + "has already a room with ID " + existingRoomId)
+                       .build();
+      }
+
+      if (StringUtils.isBlank(roomId) && create) {
+        roomId = matrixService.createMatrixRoomForSpace(space);
+      }
+
       matrixService.addMatrixMetadata(space, roomId);
-      return Response.ok().entity(roomId).build();
+      return Response.ok().entity("A new Matrix room {id=" + roomId + " was created for space " + space.getDisplayName()).build();
     } catch (Exception e) {
       LOG.error("Could not link space {} to Matrix team {}", spaceGroupId, roomId);
       return Response.status(Response.Status.INTERNAL_SERVER_ERROR)

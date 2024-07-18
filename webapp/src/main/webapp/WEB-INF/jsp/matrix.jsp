@@ -6,7 +6,7 @@
     id="matrixChatButton">
     <script type="text/javascript">
       require(['PORTLET/matrix/Matrix'], app => {
-        const serverName = '<%= PropertyManager.getProperty(org.exoplatform.addons.matrix.services.MatrixHttpClient.SERVER_NAME)%>';
+        const serverName = '<%= PropertyManager.getProperty(org.exoplatform.addons.matrix.services.MatrixConstants.SERVER_NAME)%>';
         if(eXo.env.portal.spaceId) {
           fetch('/portal/rest/matrix?spaceId='+eXo.env.portal.spaceId, {
             method: 'GET',

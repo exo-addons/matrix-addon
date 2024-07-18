@@ -15,25 +15,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+
+import static org.exoplatform.addons.matrix.services.MatrixConstants.*;
 
 public class MatrixHttpClient {
   private static final Log    LOG                           = ExoLogger.getLogger(MatrixHttpClient.class.toString());
-
-  public static final String  MATRIX_SERVER_URL             = "exo.matrix.server.url";
-
-  private static final String MATRIX_SERVER_URL_IS_REQUIRED =
-                                                            "The URL of the Matrix server is required, please provide it using System properties !";
-
-  private static final String MATRIX_ACCESS_TOKEN           = "exo.matrix.access_token";
-
-  private static final String BEARER                        = "Bearer ";
-
-  private static final String AUTHORIZATION                 = "Authorization";
-
-  public static final String SERVER_NAME                   = "exo.matrix.server.name";
-  private static final String SHARED_SECRET_REGISTRATION = "exo.matrix.shared_secret_registration";
 
   private MatrixHttpClient() {
   }
@@ -235,4 +222,28 @@ public class MatrixHttpClient {
   }
 
 
+  public static String disableAccount(String userName, boolean eraseData) {
+    String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_synapse/admin/v1/deactivate/" + userName;
+    String payload = """
+       {
+         "erase": %s
+       }
+       """.formatted(Boolean.FALSE.toString()); // erase or not the user data on Matrix, currently : Not erase
+
+    try {
+      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
+      HttpResponse<String> response = sendHttpPostRequest(url, token, payload);
+      if(response.statusCode() >= 200 && response.statusCode() < 300) {
+        JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
+        JsonValue jsonResponse = jsonGenerator.createJsonObjectFromString(response.body());
+        return jsonResponse.getElement("id_server_unbind_result").getStringValue();
+      } else {
+        LOG.error("Error deactivating user, Matrix server returned HTTP {} error {}", String.valueOf(response.statusCode()), response.body());
+        return null;
+      }
+    } catch (Exception e) {
+      LOG.error("Could not deactivate the user on Matrix", e);
+      return null;
+    }
+  }
 }

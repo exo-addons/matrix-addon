@@ -1,15 +1,18 @@
 package org.exoplatform.addons.matrix.services;
 
 import org.apache.commons.lang3.StringUtils;
+import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
-import org.exoplatform.social.common.ObjectAlreadyExistsException;
 import org.exoplatform.social.core.space.model.Space;
 import org.exoplatform.social.metadata.MetadataService;
 import org.exoplatform.social.metadata.model.MetadataItem;
 import org.exoplatform.social.metadata.model.MetadataKey;
 import org.exoplatform.social.metadata.model.MetadataObject;
+import org.exoplatform.ws.frameworks.json.impl.JsonException;
+
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,5 +64,11 @@ public class MatrixService {
       metadataService.createMetadataItem(metadataObject, metadataKey, properties);
     }
     return roomId;
+  }
+
+  public String createMatrixRoomForSpace(Space space) throws JsonException, IOException, InterruptedException {
+    String teamDisplayName = space.getDisplayName();
+    return MatrixHttpClient.createRoom(teamDisplayName);
+
   }
 }

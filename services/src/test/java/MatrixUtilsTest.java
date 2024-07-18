@@ -41,4 +41,15 @@ public class MatrixUtilsTest {
     user.setLastName("User");
     MatrixHttpClient.saveUserAccount(user);
   }
+
+  @Test
+  public void testDisableUserAccount() {
+    String randomKey = String.valueOf(Math.round(Math.random() * 10000));
+    User user = new UserImpl("testUser" + randomKey);
+    user.setEmail("test" + randomKey + "@exo.com");
+    user.setFirstName("test " + randomKey);
+    user.setLastName("User");
+    String username = MatrixHttpClient.saveUserAccount(user);
+    MatrixHttpClient.disableAccount(username, false);
+  }
 }
