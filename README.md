@@ -25,10 +25,10 @@ email:
   require_transport_security: false
   enable_tls: false
   notif_from: "Your Friendly %(app)s homeserver <noreply@example.com>"
-  app_name: my_branded_matrix_server
+  app_name: eXo Matrix Chat # Name of the server that will appear in notifications
   enable_notifs: true
   notif_for_new_users: true
-  client_base_url: "http://localhost/riot"
+  client_base_url: "http://localhost/riot" # URL to the Matrix client (Element)
   validation_token_lifetime: 15m
   invite_client_location: https://app.element.io
 
