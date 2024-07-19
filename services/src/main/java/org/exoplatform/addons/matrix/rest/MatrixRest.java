@@ -78,6 +78,7 @@ public class MatrixRest implements ResourceContainer {
 
   @GET
   @RolesAllowed("users")
+  @Path("linkroom")
   @Operation(summary = "Set the matrix room bound to the current space", method = "POST", description = "Set the id of the matrix room bound to the current space")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Invalid query input"),

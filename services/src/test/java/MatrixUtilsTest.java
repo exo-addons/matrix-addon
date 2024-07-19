@@ -1,8 +1,15 @@
 import org.exoplatform.addons.matrix.services.MatrixHttpClient;
 import org.exoplatform.services.organization.User;
 import org.exoplatform.services.organization.idm.UserImpl;
+import org.exoplatform.ws.frameworks.json.impl.JsonException;
 import org.junit.Before;
 import org.junit.Test;
+
+import java.io.IOException;
+import java.util.Date;
+
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.fail;
 
 /**
  * This test class requires an available mattermost server
@@ -16,7 +23,7 @@ public class MatrixUtilsTest {
 
   @Before
   public void setUp() {
-    System.setProperty("exo.matrix.access_token", "syt_cm9vdA_zaStlajCIsKnXTSFUZoy_0lsfoi");
+    System.setProperty("exo.matrix.access_token", "syt_cm9vdA_HxkqWHDpGLbuvKoCYucM_1WlWyy");
     System.setProperty("exo.matrix.server.url", "http://localhost:8008");
     System.setProperty("exo.matrix.shared_secret_registration", "4fzT.7xvkyp1EA-*bX#fzpVgOc_cb0y9z6*uOCUht1DO5ksad8");
     System.setProperty("exo.matrix.server.name", "matrix.exo.tn");
@@ -51,5 +58,16 @@ public class MatrixUtilsTest {
     user.setLastName("User");
     String username = MatrixHttpClient.saveUserAccount(user);
     MatrixHttpClient.disableAccount(username, false);
+  }
+
+  @Test
+  public void testRenameSpace() {
+    String roomId = null;
+    try {
+      roomId = MatrixHttpClient.createRoom("new room");
+    } catch (JsonException | IOException | InterruptedException e) {
+      
+    }
+    String eventId = MatrixHttpClient.renameRoom(roomId, "new room renamed" + new Date().getTime());
   }
 }

@@ -3,6 +3,7 @@ package org.exoplatform.addons.matrix.listeners;
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.addons.matrix.services.MatrixHttpClient;
 import org.exoplatform.addons.matrix.services.MatrixService;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.space.SpaceListenerPlugin;
@@ -40,4 +41,16 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
     }
   }
 
+  @Override
+  public void spaceRenamed(SpaceLifeCycleEvent event) {
+    Space space = event.getSpace();
+    String spaceDisplayName = space.getDisplayName();
+    String roomId;
+    try {
+      roomId = matrixService.getRomBySpace(space);
+      MatrixHttpClient.renameRoom(roomId, spaceDisplayName);
+    } catch (ObjectNotFoundException e) {
+      LOG.warn("Could not find a room linked to the space {}", spaceDisplayName);
+    }
+  }
 }

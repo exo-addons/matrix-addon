@@ -51,7 +51,7 @@ This is useful when the space is already created.
 A REST web service was implemented to link an existing space to a room or even to create the room on Matrix server.
 ### Service URL :
 Here is the URl to link a Matrix room to an existing space
- - http://SERVER_DOMAIN/portal/rest/matrix?spaceGroupId=my_new_space&create=true
+ - http://SERVER_DOMAIN/portal/rest/matrix/linkroom?spaceGroupId=my_new_space&create=true
 Parameters :
 - spaceGroupId : the group ID of the space that we want to link. We can get it from the space URL. it is the words between the **:spaces:** and the next **/** character. 
   For example : **Required** if the space URL is /portal/g/:spaces:support_team/ then the groupId is **support_team** 

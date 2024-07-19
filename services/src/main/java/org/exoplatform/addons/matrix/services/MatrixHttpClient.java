@@ -129,7 +129,7 @@ public class MatrixHttpClient {
     String payload = """
         {
            "nonce": "%s",
-           "username": "%s",PUT /_synapse/admin/v2/users/<user_id>
+           "username": "%s",
            "displayname": "%s",
            "password": "%s",
            "admin": false,
@@ -223,6 +223,9 @@ public class MatrixHttpClient {
 
 
   public static String disableAccount(String userName, boolean eraseData) {
+    if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
+      throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
+    }
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_synapse/admin/v1/deactivate/" + userName;
     String payload = """
        {
@@ -243,6 +246,36 @@ public class MatrixHttpClient {
       }
     } catch (Exception e) {
       LOG.error("Could not deactivate the user on Matrix", e);
+      return null;
+    }
+  }
+
+
+  public static String renameRoom(String roomId, String newRoomName) {
+    if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
+      throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
+    }
+    String fullRoomId = roomId + ":" + PropertyManager.getProperty(SERVER_NAME);
+    String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/client/v3/rooms/" + fullRoomId + "/state/m.room.name/";
+    String payload = """
+       {
+         "name": "%s"
+       }
+       """.formatted(newRoomName);
+
+    try {
+      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
+      HttpResponse<String> response = sendHttpPutRequest(url, token, payload);
+      if(response.statusCode() >= 200 && response.statusCode() < 300) {
+        JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
+        JsonValue jsonResponse = jsonGenerator.createJsonObjectFromString(response.body());
+        return jsonResponse.getElement("event_id").getStringValue();
+      } else {
+        LOG.error("Error renaming the room {}, Matrix server returned HTTP {} error {}",roomId, String.valueOf(response.statusCode()), response.body());
+        return null;
+      }
+    } catch (Exception e) {
+      LOG.error("Could not rename the room on Matrix", e);
       return null;
     }
   }
