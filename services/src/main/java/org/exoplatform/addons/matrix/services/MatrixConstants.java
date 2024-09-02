@@ -22,7 +22,24 @@ public class MatrixConstants {
 
   public static final String AUTHORIZATION                 = "Authorization";
 
+  public static final String CONTENT_TYPE                  = "Content-type";
+
   public static final String SERVER_NAME                   = "exo.matrix.server.name";
 
   public static final String SHARED_SECRET_REGISTRATION    = "exo.matrix.shared_secret_registration";
+
+  public static final String USER_MATRIX_ID                = "matrixId";
+
+  public static final String MESSAGE_USER_JOINED_SPACE     = "You are invited to join the room linked to the space %s !";
+
+  public static final String MESSAGE_USER_KICKED_SPACE     =
+                                                       "You are no more member of the space %s, thus you were kicked out of this room!";
+
+  // User roles on Matrix
+  public static final String ADMIN_ROLE                    = "100";
+
+  public static final String MODERATOR_ROLE                = "50";
+
+  public static final String SIMPLE_USER_ROLE              = "0";
+
 }

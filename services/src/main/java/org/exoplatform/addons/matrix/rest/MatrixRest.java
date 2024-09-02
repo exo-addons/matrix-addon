@@ -64,7 +64,7 @@ public class MatrixRest implements ResourceContainer {
     }
 
     try {
-      return Response.ok().entity(matrixService.getRomBySpace(space)).build();
+      return Response.ok().entity(matrixService.getRoomBySpace(space)).build();
     } catch (ObjectNotFoundException e) {
       return Response.status(Response.Status.NOT_FOUND)
                      .entity("There are more than one metadata for the space" + space.getPrettyName())
@@ -99,7 +99,7 @@ public class MatrixRest implements ResourceContainer {
         return Response.status(Response.Status.NOT_FOUND).entity("space with group Id " + spaceGroupId + "was not found").build();
       }
 
-      String existingRoomId = matrixService.getRomBySpace(space);
+      String existingRoomId = matrixService.getRoomBySpace(space);
       if (StringUtils.isNotBlank(existingRoomId)) {
         return Response.status(Response.Status.CONFLICT)
                        .entity("space with group Id " + spaceGroupId + "has already a room with ID " + existingRoomId)
