@@ -5,6 +5,9 @@ import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.social.core.space.model.Space;
 import org.exoplatform.social.metadata.MetadataService;
 import org.exoplatform.social.metadata.model.MetadataItem;
@@ -23,13 +26,23 @@ public class MatrixService {
 
   private static final Log LOG = ExoLogger.getLogger(MatrixService.class);
 
-  private MetadataService metadataService;
+  private MetadataService  metadataService;
 
-  public MatrixService(MetadataService metadataService) {
+  private IdentityManager  identityManager;
+
+  public MatrixService(MetadataService metadataService, IdentityManager identityManager) {
+    this.identityManager = identityManager;
     this.metadataService = metadataService;
   }
 
-  public String getRomBySpace(Space space) throws ObjectNotFoundException, IllegalStateException {
+  /**
+   * Returns the ID of the room linked to a space from the Metadata of the space
+   * @param space
+   * @return the roomId linked to the space
+   * @throws ObjectNotFoundException
+   * @throws IllegalStateException
+   */
+  public String getRoomBySpace(Space space) throws ObjectNotFoundException, IllegalStateException {
     MetadataKey metadataKey = new MetadataKey(MATRIX_METADATA_TYPE, MATRIX_METADATA_NAME, 0);
     MetadataObject metadataObject = new MetadataObject("Space", space.getId(), null, Long.parseLong(space.getId()));
     List<MetadataItem> metadataItems = metadataService.getMetadataItemsByMetadataTypeAndObject(metadataKey.getType(), metadataObject);
@@ -48,6 +61,13 @@ public class MatrixService {
     }
   }
 
+  /**
+   * Adds metadata for the space including the matrix ID of the room linked top the space
+   * @param space the Space
+   * @param roomId the ID of the matrix room
+   * @return the room ID if no exception is thrown
+   * @throws ObjectAlreadyExistsException
+   */
   public String addMatrixMetadata(Space space, String roomId) throws ObjectAlreadyExistsException {
     MetadataKey metadataKey = new MetadataKey(MATRIX_METADATA_TYPE, MATRIX_METADATA_NAME, 0);
     MetadataObject metadataObject = new MetadataObject("Space", space.getId(), null, Long.parseLong(space.getId()));
@@ -66,9 +86,31 @@ public class MatrixService {
     return roomId;
   }
 
+  /**
+   * Creates a room for predefined space
+   * @param space the space
+   * @return String representing the room id
+   * @throws JsonException
+   * @throws IOException
+   * @throws InterruptedException
+   */
   public String createMatrixRoomForSpace(Space space) throws JsonException, IOException, InterruptedException {
     String teamDisplayName = space.getDisplayName();
-    return MatrixHttpClient.createRoom(teamDisplayName);
+    String description = space.getDescription() != null ? space.getDescription() : "";
+    return MatrixHttpClient.createRoom(teamDisplayName, description);
+  }
 
+  /**
+   * Get the matrix ID of a defined user
+   * @param userName of the user
+   * @return the matrix ID
+   */
+  public String getMatrixIdForUser(String userName) {
+    Identity newMember = identityManager.getOrCreateUserIdentity(userName);
+    Profile newMemberProfile = newMember.getProfile();
+    if(StringUtils.isNotBlank((String) newMemberProfile.getProperty(USER_MATRIX_ID))) {
+      return newMemberProfile.getProperty(USER_MATRIX_ID).toString();
+    }
+    return null;
   }
 }
