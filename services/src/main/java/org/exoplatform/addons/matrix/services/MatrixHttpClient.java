@@ -17,7 +17,6 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 
@@ -599,6 +598,45 @@ public class MatrixHttpClient {
       }
     } catch (Exception e) {
       LOG.error("Could not update the avatar of the user on Matrix", e);
+      return false;
+    }
+
+  }
+
+  /**
+   * Updates the room description
+   * @param matrixRoomId the ID of the room on Matrix
+   * @param description the updated description
+   * @return true if the operation is successful, false otherwise
+   */
+  public static boolean updateRoomDescription(String matrixRoomId, String description) {
+    String fullRoomId = matrixRoomId + ":" + PropertyManager.getProperty(SERVER_NAME);
+    String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/client/v3/rooms/" + URLEncoder.encode(fullRoomId, StandardCharsets.UTF_8) + "/state/m.room.topic/";
+    String plainDescription = description.replaceAll("<[^>]*>", "").replaceAll("\n", "");
+    String payload = """
+            {
+            "topic":"%s",
+            "org.matrix.msc3765.topic":
+              [
+                {
+                  "body":"%s",
+                  "mimetype":"text/html"
+                }
+              ]
+            }
+            """.formatted(plainDescription, URLEncoder.encode(description, StandardCharsets.UTF_8));
+    try {
+      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
+      HttpResponse<String> response = sendHttpPutRequest(url, token, payload);
+      if (response.statusCode() >= 200 && response.statusCode() < 300) {
+        LOG.info("Description of room {} updated successfully !", matrixRoomId);
+        return true;
+      } else {
+        LOG.error("Error updating the description of the room {} ,Matrix server returned HTTP {} error {}", matrixRoomId, String.valueOf(response.statusCode()), response.body());
+        return false;
+      }
+    } catch (Exception e) {
+      LOG.error("Could not update the description of the room on Matrix", e);
       return false;
     }
 

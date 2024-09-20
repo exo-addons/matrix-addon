@@ -111,11 +111,11 @@ public class MatrixRest implements ResourceContainer {
       }
 
       matrixService.addMatrixMetadata(space, roomId);
-      return Response.ok().entity("A new Matrix room {id=" + roomId + " was created for space " + space.getDisplayName()).build();
+      return Response.ok().entity("A new Matrix room {id=" + roomId + " } was created for space " + space.getDisplayName()).build();
     } catch (Exception e) {
-      LOG.error("Could not link space {} to Matrix team {}", spaceGroupId, roomId);
+      LOG.error("Could not link space {} to Matrix room {}", spaceGroupId, roomId, e);
       return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                     .entity("Could not link space " + spaceGroupId + " to Matrix team " + roomId)
+                     .entity("Could not link space " + spaceGroupId + " to Matrix room " + roomId + " : " + e.getMessage())
                      .build();
     }
   }

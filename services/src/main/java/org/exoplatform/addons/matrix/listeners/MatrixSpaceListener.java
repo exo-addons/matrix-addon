@@ -151,4 +151,17 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
       LOG.error("Could not upload the avatar of the space {}, on Matrix room {}", space.getDisplayName(), roomId);
     }
   }
+
+  @Override
+  public void spaceDescriptionEdited(SpaceLifeCycleEvent event) {
+    Space space = event.getSpace();
+    String spaceDisplayName = space.getDisplayName();
+    String roomId;
+    try {
+      roomId = matrixService.getRoomBySpace(space);
+      MatrixHttpClient.updateRoomDescription(roomId, space.getDescription());
+    } catch (ObjectNotFoundException e) {
+      LOG.warn("Could not find a room linked to the space {}", spaceDisplayName);
+    }
+  }
 }
