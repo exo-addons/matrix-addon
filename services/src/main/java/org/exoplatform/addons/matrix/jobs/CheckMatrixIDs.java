@@ -3,6 +3,7 @@ package org.exoplatform.addons.matrix.jobs;
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.addons.matrix.services.MatrixConstants;
 import org.exoplatform.addons.matrix.services.MatrixHttpClient;
+import org.exoplatform.addons.matrix.services.MatrixService;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.commons.utils.ListAccess;
 import org.exoplatform.container.ExoContainerContext;
@@ -33,6 +34,7 @@ public class CheckMatrixIDs implements Job {
   public void execute(JobExecutionContext context) throws JobExecutionException {
     LOG.info("Start Checking users fro their Matrix IDs");
     IdentityManager identityManager = CommonsUtils.getService(IdentityManager.class);
+    MatrixService matrixService = CommonsUtils.getService(MatrixService.class);
     OrganizationService organizationService = CommonsUtils.getService(OrganizationService.class);
 
     int checkedUsers = 0;
@@ -49,7 +51,7 @@ public class CheckMatrixIDs implements Job {
           Profile userProfile = userIdentity.getProfile();
           String userMatrixId = (String) userProfile.getProperty(MatrixConstants.USER_MATRIX_ID);
           if(StringUtils.isBlank(userMatrixId)) {
-            String matrixId = MatrixHttpClient.saveUserAccount(user, false);
+            String matrixId = MatrixHttpClient.saveUserAccount(user, false, matrixService.getMatrixAccessToken());
             userProfile.getProperties().put(USER_MATRIX_ID, matrixId);
             identityManager.updateProfile(userProfile);
           }

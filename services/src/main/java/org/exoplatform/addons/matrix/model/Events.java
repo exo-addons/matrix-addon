@@ -20,16 +20,16 @@ public class Events {
   public String toJson() {
     return """
             {
-                "m.room.name": 50,
-                "m.room.power_levels": 100,
-                "m.room.history_visibility": 100,
-                "m.room.canonical_alias": 50,
-                "m.room.avatar": 50,
-                "m.room.tombstone": 100,
-                "m.room.server_acl": 100,
-                "m.room.encryption": 100
+                "m.room.name": %s,
+                "m.room.power_levels": %s,
+                "m.room.history_visibility": %s,
+                "m.room.canonical_alias": %s,
+                "m.room.avatar": %s,
+                "m.room.tombstone": %s,
+                "m.room.server_acl": %s,
+                "m.room.encryption": %s
              }
-              """.formatted(this.getName(), this.getPowerLevels(), this.getHistoryVisibility(), this.getCanonicalAlias(), this.getAvatar(), this.getTombstone(), this.getServerAcl(), this.getEncryption());
+            """.formatted(this.getName(), this.getPowerLevels(), this.getHistoryVisibility(), this.getCanonicalAlias(), this.getAvatar(), this.getTombstone(), this.getServerAcl(), this.getEncryption());
   }
   public static Events fromJson(JsonValue jsonValue) {
     return new Events(jsonValue.getElement("m.room.name").getStringValue(),

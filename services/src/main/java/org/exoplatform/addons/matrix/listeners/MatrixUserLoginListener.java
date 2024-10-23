@@ -2,6 +2,7 @@ package org.exoplatform.addons.matrix.listeners;
 
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.addons.matrix.services.MatrixHttpClient;
+import org.exoplatform.addons.matrix.services.MatrixService;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.services.listener.Asynchronous;
@@ -25,6 +26,8 @@ public class MatrixUserLoginListener extends Listener<ConversationRegistry, Conv
 
   private IdentityManager identityManager;
 
+  private MatrixService matrixService;
+
   private OrganizationService organizationService;
   public MatrixUserLoginListener(IdentityManager identityManager, OrganizationService organizationService) {
     this.identityManager = identityManager;
@@ -40,7 +43,7 @@ public class MatrixUserLoginListener extends Listener<ConversationRegistry, Conv
         String matrixUserId = (String) userProfile.getProperty(USER_MATRIX_ID);
         if(StringUtils.isBlank(matrixUserId)) {
           User user = organizationService.getUserHandler().findUserByName(userId);
-          String matrixId = MatrixHttpClient.saveUserAccount(user, false);
+          String matrixId = MatrixHttpClient.saveUserAccount(user, false, matrixService.getMatrixAccessToken());
           userProfile.getProperties().put(USER_MATRIX_ID, matrixId);
           identityManager.updateProfile(userProfile);
         }
