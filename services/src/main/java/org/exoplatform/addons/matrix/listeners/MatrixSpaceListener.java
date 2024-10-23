@@ -31,7 +31,7 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
     try {
       String teamDisplayName = space.getDisplayName();
       String description = space.getDescription() != null ? space.getDescription() : "";
-      String matrixRoomId = MatrixHttpClient.createRoom(teamDisplayName, description);
+      String matrixRoomId = MatrixHttpClient.createRoom(teamDisplayName, description, matrixService.getMatrixAccessToken());
 
       if (StringUtils.isNotBlank(matrixRoomId)) {
         matrixService.addMatrixMetadata(space, matrixRoomId);
@@ -39,22 +39,22 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
         for(String manager : space.getManagers()) {
           String matrixIdOfUser = matrixService.getMatrixIdForUser(manager);
           if(StringUtils.isNotBlank(matrixRoomId) && StringUtils.isNotBlank(matrixIdOfUser)) {
-            MatrixHttpClient.joinUserToRoom(matrixRoomId, matrixIdOfUser);
-            MatrixHttpClient.makeUserAdminInRoom(matrixRoomId, matrixIdOfUser);
+            MatrixHttpClient.joinUserToRoom(matrixRoomId, matrixIdOfUser, matrixService.getMatrixAccessToken());
+            MatrixHttpClient.makeUserAdminInRoom(matrixRoomId, matrixIdOfUser, matrixService.getMatrixAccessToken());
             members.remove(manager);
           }
         }
         for(String member : members) {
           String matrixIdOfUser = matrixService.getMatrixIdForUser(member);
           if(StringUtils.isNotBlank(matrixRoomId) && StringUtils.isNotBlank(matrixIdOfUser)) {
-            MatrixHttpClient.joinUserToRoom(matrixRoomId, matrixIdOfUser);
+            MatrixHttpClient.joinUserToRoom(matrixRoomId, matrixIdOfUser, matrixService.getMatrixAccessToken());
           }
         }
 
         // Disable inviting user but for Moderators
-        MatrixRoomPermissions matrixRoomPermissions = MatrixHttpClient.getRoomSettings(matrixRoomId);
+        MatrixRoomPermissions matrixRoomPermissions = MatrixHttpClient.getRoomSettings(matrixRoomId, matrixService.getMatrixAccessToken());
         matrixRoomPermissions.setInvite(ADMIN_ROLE);
-        MatrixHttpClient.updateRoomSettings(matrixRoomId, matrixRoomPermissions);
+        MatrixHttpClient.updateRoomSettings(matrixRoomId, matrixRoomPermissions, matrixService.getMatrixAccessToken());
       }
     } catch (Exception e) {
       LOG.error("Mattermost integration: Could not create a team for space {}", space.getDisplayName(), e);
@@ -68,7 +68,7 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
     String roomId;
     try {
       roomId = matrixService.getRoomBySpace(space);
-      MatrixHttpClient.renameRoom(roomId, spaceDisplayName);
+      MatrixHttpClient.renameRoom(roomId, spaceDisplayName, matrixService.getMatrixAccessToken());
     } catch (ObjectNotFoundException e) {
       LOG.warn("Could not find a room linked to the space {}", spaceDisplayName);
     }
@@ -82,7 +82,7 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
       String roomId = matrixService.getRoomBySpace(space);
       String matrixIdOfUser = matrixService.getMatrixIdForUser(userId);
       if(StringUtils.isNotBlank(roomId) && StringUtils.isNotBlank(matrixIdOfUser)) {
-        MatrixHttpClient.joinUserToRoom(roomId, matrixIdOfUser);
+        MatrixHttpClient.joinUserToRoom(roomId, matrixIdOfUser, matrixService.getMatrixAccessToken());
       }
     } catch (ObjectNotFoundException e) {
       LOG.error("Could not find the room linked to the space {}", space.getDisplayName(), e);
@@ -97,7 +97,7 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
       String roomId = matrixService.getRoomBySpace(space);
       String matrixIdOfUser = matrixService.getMatrixIdForUser(userId);
       if(StringUtils.isNotBlank(roomId) && StringUtils.isNotBlank(matrixIdOfUser)) {
-        MatrixHttpClient.kickUserFromRoom(roomId, matrixIdOfUser, MESSAGE_USER_KICKED_SPACE.formatted(space.getDisplayName()));
+        MatrixHttpClient.kickUserFromRoom(roomId, matrixIdOfUser, MESSAGE_USER_KICKED_SPACE.formatted(space.getDisplayName()), matrixService.getMatrixAccessToken());
       }
     } catch (ObjectNotFoundException e) {
       LOG.error("Could not find the room linked to the space {}", space.getDisplayName(), e);
@@ -111,7 +111,7 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
     String matrixIdOfUser = matrixService.getMatrixIdForUser(event.getTarget());
     try {
       roomId = matrixService.getRoomBySpace(space);
-      MatrixHttpClient.makeUserAdminInRoom(roomId, matrixIdOfUser);
+      MatrixHttpClient.makeUserAdminInRoom(roomId, matrixIdOfUser, matrixService.getMatrixAccessToken());
     } catch (ObjectNotFoundException e) {
       LOG.error("Could not revoke administrator role from user {}, on Matrix room {}", matrixIdOfUser, roomId);
     }
@@ -126,7 +126,7 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
       roomId = matrixService.getRoomBySpace(space);
       // There is no API to revoke manager role from a user, then we kick out the user from the room then re-adds him as simple user
       //MatrixHttpClient.kickUserFromRoom(roomId, matrixIdOfUser, "Revoke manager role of user");
-      MatrixHttpClient.joinUserToRoom(roomId, matrixIdOfUser);
+      MatrixHttpClient.joinUserToRoom(roomId, matrixIdOfUser, matrixService.getMatrixAccessToken());
     } catch (ObjectNotFoundException e) {
       LOG.error("Could not revoke administrator role from user {}, on Matrix room {}", matrixIdOfUser, roomId);
     }
@@ -144,8 +144,8 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
         if(!"application/octet-stream".equals(space.getAvatarAttachment().getMimeType())) {
           mimeType = space.getAvatarAttachment().getMimeType();
         }
-        String avatarURL = MatrixHttpClient.uploadFile(space.getAvatarAttachment().getFileName(), mimeType, imageBytes);
-        MatrixHttpClient.updateRoomAvatar(roomId, avatarURL);
+        String avatarURL = MatrixHttpClient.uploadFile(space.getAvatarAttachment().getFileName(), mimeType, imageBytes, matrixService.getMatrixAccessToken());
+        MatrixHttpClient.updateRoomAvatar(roomId, avatarURL, matrixService.getMatrixAccessToken());
       }
     } catch (ObjectNotFoundException e) {
       LOG.error("Could not upload the avatar of the space {}, on Matrix room {}", space.getDisplayName(), roomId);
@@ -159,7 +159,7 @@ public class MatrixSpaceListener extends SpaceListenerPlugin {
     String roomId;
     try {
       roomId = matrixService.getRoomBySpace(space);
-      MatrixHttpClient.updateRoomDescription(roomId, space.getDescription());
+      MatrixHttpClient.updateRoomDescription(roomId, space.getDescription(), matrixService.getMatrixAccessToken());
     } catch (ObjectNotFoundException e) {
       LOG.warn("Could not find a room linked to the space {}", spaceDisplayName);
     }
