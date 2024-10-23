@@ -1,5 +1,6 @@
 package org.exoplatform.addons.matrix.services;
 
+import org.apache.commons.codec.digest.HmacAlgorithms;
 import org.apache.commons.codec.digest.HmacUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.addons.matrix.model.MatrixRoomPermissions;
@@ -27,9 +28,39 @@ public class MatrixHttpClient {
 
   private MatrixHttpClient() {
   }
-  
 
-  public static String createRoom(String name, String description) throws JsonException, IOException, InterruptedException {
+  public static String getAdminAccessToken(String userJWTToken) throws JsonException, IOException, InterruptedException {
+    if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
+      throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
+    }
+    if(StringUtils.isEmpty(userJWTToken)) {
+      throw new IllegalArgumentException(MATRIX_ADMIN_USERNAME_IS_REQUIRED);
+    }
+    String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/client/r0/login";
+    String payload = """
+        {
+          type:'org.matrix.login.jwt',
+          'token': %s
+        }
+        """.formatted(userJWTToken);
+    try {
+      HttpResponse<String> response = sendHttpPostRequest(url, null, payload);
+      if(response.statusCode() >= 200 && response.statusCode() < 300) {
+        JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
+        return jsonGenerator.createJsonObjectFromString(response.body()).getElement("access_token").getStringValue();
+      } else {
+        LOG.error("Error Authenticating admin account with JWT, Matrix server returned HTTP {} error {}", String.valueOf(response.statusCode()), response.body());
+        return null;
+      }
+    } catch (Exception e) {
+      LOG.error("Could not authenticate Admin account with JWT on Matrix", e);
+      throw e;
+    }
+
+  }
+
+
+    public static String createRoom(String name, String description, String token) throws JsonException, IOException, InterruptedException {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -48,20 +79,12 @@ public class MatrixHttpClient {
               "content": {
                 "guest_access": "forbidden"
               }
-            },
-            {
-              "type": "m.room.encryption",
-              "state_key": "",
-              "content": {
-                "algorithm": "m.megolm.v1.aes-sha2"
-              }
             }
           ]
         }
         """.formatted(name, description);
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPostRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
@@ -72,7 +95,7 @@ public class MatrixHttpClient {
         return null;
       }
     } catch (Exception e) {
-      LOG.error("Could not create a team on Mattermost", e);
+      LOG.error("Could not create a team on Matrix", e);
       throw e;
     }
   }
@@ -133,12 +156,12 @@ public class MatrixHttpClient {
 
   }
 
-  public static String createUserAccount(User user) {
+  public static String createUserAccount(User user, String token) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
 
-    String nonce = getRegistrationNonce();
+    String nonce = getRegistrationNonce(token);
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_synapse/admin/v1/register";
     String hmac = hmacUserProperties(nonce, user.getUserName(), user.getUserName(), false);
 
@@ -154,7 +177,6 @@ public class MatrixHttpClient {
         """.formatted(nonce, user.getUserName(), user.getDisplayName(), user.getUserName(), hmac);
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPostRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
@@ -170,7 +192,7 @@ public class MatrixHttpClient {
     }
   }
 
-  public static String saveUserAccount(User user, boolean isNew) {
+  public static String saveUserAccount(User user, boolean isNew, String token) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -213,12 +235,12 @@ public class MatrixHttpClient {
                """.formatted(user.getDisplayName(), user.getEmail(), String.valueOf(!user.isEnabled()));
     }
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPutRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
         JsonValue userAccount = jsonGenerator.createJsonObjectFromString(response.body());
-        return userAccount.getElement("name").getStringValue();
+        String fullMatrixID = userAccount.getElement("name").getStringValue();
+        return fullMatrixID.substring(1, fullMatrixID.indexOf(":"));
       } else {
         LOG.error("Error creating a user account, Matrix server returned HTTP {} error {}", String.valueOf(response.statusCode()), response.body());
         return null;
@@ -232,14 +254,13 @@ public class MatrixHttpClient {
 
   private static String hmacUserProperties(String nonce, String userName, String password, boolean isAdmin) {
     String userProperties = nonce + "\0" + userName + "\0" + password + "\0" + (isAdmin? "admin" : "notadmin");
-    return HmacUtils.hmacSha1Hex(PropertyManager.getProperty(SHARED_SECRET_REGISTRATION), userProperties);
+    return new HmacUtils(HmacAlgorithms.HMAC_SHA_1, PropertyManager.getProperty(SHARED_SECRET_REGISTRATION)).hmacHex(userProperties);
   }
 
-  private static String getRegistrationNonce() {
+  private static String getRegistrationNonce(String accessToken) {
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_synapse/admin/v1/register";
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
-      HttpResponse<String> response = sendHttpGetRequest(url, token);
+      HttpResponse<String> response = sendHttpGetRequest(url, accessToken);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
         JsonValue jsonResponse = jsonGenerator.createJsonObjectFromString(response.body());
@@ -255,7 +276,7 @@ public class MatrixHttpClient {
   }
 
 
-  public static String disableAccount(String userName, boolean eraseData) {
+  public static String disableAccount(String userName, boolean eraseData, String token) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -267,7 +288,6 @@ public class MatrixHttpClient {
        """.formatted(Boolean.FALSE.toString()); // erase or not the user data on Matrix, currently : Not erase
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPostRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
@@ -284,7 +304,7 @@ public class MatrixHttpClient {
   }
 
 
-  public static String renameRoom(String roomId, String newRoomName) {
+  public static String renameRoom(String roomId, String newRoomName, String token) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -297,7 +317,6 @@ public class MatrixHttpClient {
        """.formatted(newRoomName);
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPutRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
@@ -321,7 +340,7 @@ public class MatrixHttpClient {
    * @param invitationMessage a custom invitation message
    * @return
    */
-  public static boolean inviteUserToRoom(String roomId, String userMatrixId, String invitationMessage) {
+  public static boolean inviteUserToRoom(String roomId, String userMatrixId, String invitationMessage, String token) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -335,7 +354,6 @@ public class MatrixHttpClient {
        """.formatted(invitationMessage, userMatrixId);
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPostRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("User {} successfully invited to room {}", userMatrixId, roomId);
@@ -357,7 +375,7 @@ public class MatrixHttpClient {
    * @param raisonMessage the raison message
    * @return
    */
-  public static boolean kickUserFromRoom(String roomId, String userMatrixId, String raisonMessage) {
+  public static boolean kickUserFromRoom(String roomId, String userMatrixId, String raisonMessage, String token) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -371,7 +389,6 @@ public class MatrixHttpClient {
        """.formatted(raisonMessage, userMatrixId);
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPostRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("User {} successfully kicked out of room {}", userMatrixId, roomId);
@@ -392,7 +409,7 @@ public class MatrixHttpClient {
    * @param matrixIdOfUser the ID of the user of Matrix
    * @return Boolean true if operation succeeded
    */
-  public static boolean joinUserToRoom(String matrixRoomId, String matrixIdOfUser) {
+  public static boolean joinUserToRoom(String matrixRoomId, String matrixIdOfUser, String token) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -405,7 +422,6 @@ public class MatrixHttpClient {
        """.formatted(matrixIdOfUser);
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPostRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("User {} successfully joined the room {}", matrixIdOfUser, matrixRoomId);
@@ -427,7 +443,7 @@ public class MatrixHttpClient {
    * @return Boolean true if succeeded
    */
 
-  public static boolean makeUserAdminInRoom(String matrixRoomId, String matrixIdOfUser) {
+  public static boolean makeUserAdminInRoom(String matrixRoomId, String matrixIdOfUser, String token) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -440,7 +456,6 @@ public class MatrixHttpClient {
        """.formatted(matrixIdOfUser);
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
       HttpResponse<String> response = sendHttpPostRequest(url, token, payload);
       if(response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("User {} is successfully an admin of the room {}", matrixIdOfUser, matrixRoomId);
@@ -460,7 +475,7 @@ public class MatrixHttpClient {
    * @param matrixRoomId
    * @return MatrixRoomPermissions object containing settings of the room
    */
-  public static MatrixRoomPermissions getRoomSettings(String matrixRoomId) {
+  public static MatrixRoomPermissions getRoomSettings(String matrixRoomId, String accessToken) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -468,8 +483,7 @@ public class MatrixHttpClient {
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/client/v3/rooms/" + fullRoomId + "/state/m.room.power_levels/";
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
-      HttpResponse<String> response = sendHttpGetRequest(url, token);
+      HttpResponse<String> response = sendHttpGetRequest(url, accessToken);
       if (response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("Permissions of room  {} were successfully loaded !", matrixRoomId);
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
@@ -491,7 +505,7 @@ public class MatrixHttpClient {
    * @param matrixRoomId the Id of the room
    * @return MatrixRoomPermissions updated room settings
    */
-  public static String updateRoomSettings(String matrixRoomId, MatrixRoomPermissions roomSettings) {
+  public static String updateRoomSettings(String matrixRoomId, MatrixRoomPermissions roomSettings, String accessToken) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
@@ -501,8 +515,7 @@ public class MatrixHttpClient {
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/client/v3/rooms/" + fullRoomId + "/state/m.room.power_levels/";
 
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
-      HttpResponse<String> response = sendHttpPutRequest(url, token, payload);
+      HttpResponse<String> response = sendHttpPutRequest(url, accessToken, payload);
       if (response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("Permissions of room  {} were successfully updated !", matrixRoomId);
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
@@ -518,15 +531,14 @@ public class MatrixHttpClient {
     }
   }
 
-  public static String uploadFile(String fileName, String mimeType, byte[] imageBytes) {
+  public static String uploadFile(String fileName, String mimeType, byte[] imageBytes, String accessToken) {
     if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
       throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
     }
 
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/media/v3/upload?filename=" + fileName;
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
-      HttpResponse<String> response = sendHttpPostRequest(url, token, mimeType, imageBytes);
+      HttpResponse<String> response = sendHttpPostRequest(url, accessToken, mimeType, imageBytes);
       if (response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("File uploaded successfully !");
         JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
@@ -548,7 +560,7 @@ public class MatrixHttpClient {
    * @param avatarURL the Avatar URL on
    * @return true if succeeded otherwise false
    */
-  public static boolean updateRoomAvatar(String matrixRoomId, String avatarURL) {
+  public static boolean updateRoomAvatar(String matrixRoomId, String avatarURL, String accessToken) {
     String fullRoomId = matrixRoomId + ":" + PropertyManager.getProperty(SERVER_NAME);
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/client/v3/rooms/" + URLEncoder.encode(fullRoomId, StandardCharsets.UTF_8) + "/state/m.room.avatar/";
     String payload = """
@@ -557,8 +569,7 @@ public class MatrixHttpClient {
             }
             """.formatted(avatarURL);
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
-      HttpResponse<String> response = sendHttpPutRequest(url, token, payload);
+      HttpResponse<String> response = sendHttpPutRequest(url, accessToken, payload);
       if (response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("Avatar of room {} updated successfully !", matrixRoomId);
         return true;
@@ -579,7 +590,7 @@ public class MatrixHttpClient {
    * @param avatarURL the avatar URL on Matrix
    * @return true if updated, false otherwise
    */
-  public static boolean updateUserAvatar(String userMatrixId, String avatarURL) {
+  public static boolean updateUserAvatar(String userMatrixId, String avatarURL, String accessToken) {
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/client/v3/profile/" + userMatrixId + "/avatar_url";
     String payload = """
             {
@@ -587,8 +598,7 @@ public class MatrixHttpClient {
             }
             """.formatted(avatarURL);
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
-      HttpResponse<String> response = sendHttpPutRequest(url, token, payload);
+      HttpResponse<String> response = sendHttpPutRequest(url, accessToken, payload);
       if (response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("Avatar of user {} updated successfully !", userMatrixId);
         return true;
@@ -609,10 +619,10 @@ public class MatrixHttpClient {
    * @param description the updated description
    * @return true if the operation is successful, false otherwise
    */
-  public static boolean updateRoomDescription(String matrixRoomId, String description) {
+  public static boolean updateRoomDescription(String matrixRoomId, String description, String accessToken) {
     String fullRoomId = matrixRoomId + ":" + PropertyManager.getProperty(SERVER_NAME);
     String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + "/_matrix/client/v3/rooms/" + URLEncoder.encode(fullRoomId, StandardCharsets.UTF_8) + "/state/m.room.topic/";
-    String plainDescription = description.replaceAll("<[^>]*>", "").replaceAll("\n", "");
+    String plainDescription = description.replaceAll("<[^>]*>", "").replace("\n", "");
     String payload = """
             {
             "topic":"%s",
@@ -626,8 +636,7 @@ public class MatrixHttpClient {
             }
             """.formatted(plainDescription, URLEncoder.encode(description, StandardCharsets.UTF_8));
     try {
-      String token = PropertyManager.getProperty(MATRIX_ACCESS_TOKEN);
-      HttpResponse<String> response = sendHttpPutRequest(url, token, payload);
+      HttpResponse<String> response = sendHttpPutRequest(url, accessToken, payload);
       if (response.statusCode() >= 200 && response.statusCode() < 300) {
         LOG.info("Description of room {} updated successfully !", matrixRoomId);
         return true;

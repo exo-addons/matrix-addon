@@ -1,8 +1,12 @@
 package org.exoplatform.addons.matrix.services;
 
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.commons.utils.PropertyManager;
+
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -14,25 +18,49 @@ import org.exoplatform.social.metadata.model.MetadataItem;
 import org.exoplatform.social.metadata.model.MetadataKey;
 import org.exoplatform.social.metadata.model.MetadataObject;
 import org.exoplatform.ws.frameworks.json.impl.JsonException;
+import org.picocontainer.Startable;
 
 import java.io.IOException;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.exoplatform.addons.matrix.services.MatrixConstants.*;
 
-public class MatrixService {
+public class MatrixService implements Startable {
 
   private static final Log LOG = ExoLogger.getLogger(MatrixService.class);
 
-  private MetadataService  metadataService;
+  private final MetadataService  metadataService;
 
-  private IdentityManager  identityManager;
+  private final IdentityManager  identityManager;
+
+  private String                 matrixAccessToken;
 
   public MatrixService(MetadataService metadataService, IdentityManager identityManager) {
     this.identityManager = identityManager;
     this.metadataService = metadataService;
+  }
+
+  public String getMatrixAccessToken() {
+    return matrixAccessToken;
+  }
+
+  @Override
+  public void start() {
+    try {
+      String jwtAccessToken = this.getJWTSessionToken(MATRIX_ADMIN_USERNAME);
+      matrixAccessToken = MatrixHttpClient.getAdminAccessToken(jwtAccessToken);
+    } catch (JsonException e) {
+      throw new RuntimeException(e);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    } catch (InterruptedException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   /**
@@ -97,7 +125,7 @@ public class MatrixService {
   public String createMatrixRoomForSpace(Space space) throws JsonException, IOException, InterruptedException {
     String teamDisplayName = space.getDisplayName();
     String description = space.getDescription() != null ? space.getDescription() : "";
-    return MatrixHttpClient.createRoom(teamDisplayName, description);
+    return MatrixHttpClient.createRoom(teamDisplayName, description, getMatrixAccessToken());
   }
 
   /**
@@ -112,5 +140,20 @@ public class MatrixService {
       return newMemberProfile.getProperty(USER_MATRIX_ID).toString();
     }
     return null;
+  }
+
+  /**
+   * Returns the JWT for user authentication
+   * @param userName the username of the current user
+   * @return String
+   */
+  public String getJWTSessionToken(String userName) {
+    Identity identity = this.identityManager.getOrCreateUserIdentity(userName);
+    return Jwts.builder()
+            .setSubject((String)identity.getProfile().getProperty(MatrixConstants.USER_MATRIX_ID))
+            .signWith(Keys.hmacShaKeyFor(PropertyManager.getProperty(MatrixConstants.MATRIX_JWT_SECRET).getBytes()))
+            .setExpiration(Date.from(LocalDate.now().plusDays(7).atStartOfDay(ZoneId.systemDefault()).toInstant()))
+            .compact();
+
   }
 }

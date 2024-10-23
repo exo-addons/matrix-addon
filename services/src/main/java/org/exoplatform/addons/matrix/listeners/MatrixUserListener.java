@@ -3,6 +3,7 @@ package org.exoplatform.addons.matrix.listeners;
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.addons.matrix.services.MatrixConstants;
 import org.exoplatform.addons.matrix.services.MatrixHttpClient;
+import org.exoplatform.addons.matrix.services.MatrixService;
 import org.exoplatform.commons.utils.PropertyManager;
 import org.exoplatform.services.organization.User;
 import org.exoplatform.services.organization.UserEventListener;
@@ -16,17 +17,20 @@ public class MatrixUserListener extends UserEventListener {
 
   private IdentityManager identityManager;
 
-  public MatrixUserListener(IdentityManager identityManager) {
+  private MatrixService   matrixService;
+
+  public MatrixUserListener(IdentityManager identityManager, MatrixService matrixService) {
     this.identityManager = identityManager;
+    this.matrixService = matrixService;
   }
 
   @Override
   public void postSave(User user, boolean isNew) throws Exception {
     if(identityManager != null) {
       Profile userProfile = identityManager.getProfile(identityManager.getOrCreateUserIdentity(user.getUserName()));
-      String matrixID = MatrixHttpClient.saveUserAccount(user, isNew);
-      if(userProfile.getProperty(USER_MATRIX_ID) == null || StringUtils.isBlank(userProfile.getProperty(USER_MATRIX_ID).toString())) {
-        userProfile.getProperties().put(USER_MATRIX_ID, matrixID);
+      String matrixId = MatrixHttpClient.saveUserAccount(user, isNew, matrixService.getMatrixAccessToken());
+      if(StringUtils.isNotBlank(matrixId) && userProfile.getProperty(USER_MATRIX_ID) == null || StringUtils.isBlank(userProfile.getProperty(USER_MATRIX_ID).toString())) {
+        userProfile.getProperties().put(USER_MATRIX_ID, matrixId);
         identityManager.updateProfile(userProfile);
       }
     }
@@ -35,7 +39,7 @@ public class MatrixUserListener extends UserEventListener {
   @Override
   public void postSetEnabled(User user) throws Exception {
     String matrixUsername = "@" + user.getUserName() + ":" + PropertyManager.getProperty(MatrixConstants.SERVER_NAME);
-     MatrixHttpClient.disableAccount(matrixUsername, false);
+     MatrixHttpClient.disableAccount(matrixUsername, false, matrixService.getMatrixAccessToken());
   }
 
 
