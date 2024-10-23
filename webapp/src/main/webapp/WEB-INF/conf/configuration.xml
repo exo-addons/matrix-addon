@@ -202,8 +202,33 @@
           <property name="jobName" value="CheckMatrixIds"/>
           <property name="groupName" value="Matrix"/>
           <property name="job" value="org.exoplatform.addons.matrix.jobs.CheckMatrixIDs"/>
-          <property name="expression" value="${exo.matrix.CheckMatrixIds.expression:59 59 21 * * ? *}"/><!-- Runs every day at 22:00 -->
+          <property name="expression" value="${meeds.matrix.CheckMatrixIds.expression:59 59 21 * * ? *}"/><!-- Runs every day at 22:00 -->
         </properties-param>
+      </init-params>
+    </component-plugin>
+  </external-component-plugins>
+  <external-component-plugins>
+    <target-component>org.exoplatform.web.filter.ExtensibleFilter</target-component>
+    <component-plugin>
+      <name>Filter useful to set a JWT for authentication o Matrix</name>
+      <set-method>addFilterDefinitions</set-method>
+      <type>org.exoplatform.web.filter.FilterDefinitionPlugin</type>
+      <init-params>
+        <object-param>
+          <name>Matrix JWT Filter</name>
+          <object type="org.exoplatform.web.filter.FilterDefinition">
+            <field name="filter">
+              <object type="io.meeds.chat.web.MatrixAuthJWTFilter" />
+            </field>
+            <field name="patterns">
+              <collection type="java.util.ArrayList" item-type="java.lang.String">
+                <value>
+                  <string>/.*</string>
+                </value>
+              </collection>
+            </field>
+          </object>
+        </object-param>
       </init-params>
     </component-plugin>
   </external-component-plugins>
