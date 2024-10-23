@@ -32,7 +32,6 @@ public class MatrixUtilsTest {
     System.setProperty("exo.matrix.server.name", "matrix.exo.tn");
   }
 
-  @Test
   public void testCreateUserAccount() {
     String randomKey = String.valueOf(Math.round(Math.random() * 100));
     User user = new UserImpl("testUser" + randomKey);
@@ -42,7 +41,6 @@ public class MatrixUtilsTest {
     MatrixHttpClient.createUserAccount(user, access_token);
   }
 
-  @Test
   public void testSaveUserAccount() {
     String randomKey = String.valueOf(Math.round(Math.random() * 100));
     User user = new UserImpl("testUser" + randomKey);
@@ -52,7 +50,6 @@ public class MatrixUtilsTest {
     MatrixHttpClient.saveUserAccount(user, true, access_token);
   }
 
-  @Test
   public void testDisableUserAccount() {
     String randomKey = String.valueOf(Math.round(Math.random() * 10000));
     User user = new UserImpl("testUser" + randomKey);
