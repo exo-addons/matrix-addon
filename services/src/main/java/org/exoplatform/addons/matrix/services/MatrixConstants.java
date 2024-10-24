@@ -5,6 +5,8 @@ public class MatrixConstants {
   private MatrixConstants() {
   }
 
+  // Meeds server configurations
+
   public static final String MATRIX_SERVER_URL             = "meeds.matrix.server.url";
 
   public static final String MATRIX_ADMIN_USERNAME         = "meeds.matrix.user.name";

@@ -9,16 +9,14 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.exoplatform.addons.matrix.services.MatrixConstants;
 import org.exoplatform.addons.matrix.services.MatrixService;
+import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.web.filter.Filter;
 
 import java.io.IOException;
 
 public class MatrixAuthJWTFilter implements Filter {
 
-  private MatrixService matrixService;
-
-  public MatrixAuthJWTFilter(MatrixService matrixService) {
-    this.matrixService = matrixService;
+  public MatrixAuthJWTFilter() {
   }
 
   /**
@@ -36,6 +34,7 @@ public class MatrixAuthJWTFilter implements Filter {
     HttpServletRequest httpRequest = (HttpServletRequest) request;
     HttpServletResponse httpResponse = (HttpServletResponse) response;
     if (httpRequest.getRemoteUser() != null) {
+      MatrixService matrixService = ExoContainerContext.getCurrentContainer().getComponentInstanceOfType(MatrixService.class);
       String sessionToken = matrixService.getJWTSessionToken(httpRequest.getRemoteUser());
       Cookie cookie = new Cookie(MatrixConstants.MATRIX_JWT_COOKIE, sessionToken);
       cookie.setPath("/");
