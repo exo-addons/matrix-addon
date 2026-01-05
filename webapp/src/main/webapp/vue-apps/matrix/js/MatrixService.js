@@ -673,9 +673,6 @@ export async function startMatrixSyncLoop(matrixFilterId) {
   while (isPolling) {
     try {
       const response = await sync(matrixFilterId || '0', since, MATRIX_SYNC_TIMEOUT);
-      if (response.status === 502) {
-        continue;
-      }
       if (response.status === 401) {
         console.warn('Unauthorized! Token may be expired.');
         // Optionally stop polling or try to refresh token
@@ -2201,12 +2198,14 @@ export function dropUserData() {
   localStorage.removeItem('matrix_user_id');
   localStorage.removeItem('matrix_access_token');
   localStorage.removeItem('matrix_last_login');
+  localStorage.removeItem(MATRIX_SYNC_SINCE);
 }
 
 export function initUserData(data) {
   localStorage.setItem('matrix_user_id', data.user_id);
   localStorage.setItem('matrix_access_token', data.access_token);
   localStorage.setItem('matrix_last_login', new Date().getTime());
+  localStorage.removeItem(MATRIX_SYNC_SINCE);
 }
 
 export async function registerUserToken() {
