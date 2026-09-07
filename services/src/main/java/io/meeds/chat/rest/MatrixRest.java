@@ -682,54 +682,6 @@ public class MatrixRest implements ResourceContainer {
     }
   }
 
-  @GetMapping("/isPushNotificationsEnabled/{userName}")
-  @Secured("users")
-  @Operation(summary = "Get the status of push notifications enabled/disabled", method = "GET", description = "Get the status of push notifications enabled/disabled")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "username is not provided"),
-      @ApiResponse(responseCode = "403", description = "Unauthorized to access information"),
-      @ApiResponse(responseCode = "500", description = "Internal server error") })
-  public ResponseEntity<String> isPushNotificationsEnabled(HttpServletRequest request, @PathVariable("userName")
-  String userName) {
-    if (StringUtils.isBlank(userName)) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The username parameter is required");
-    }
-    if (!request.getRemoteUser().equals(userName)) {
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Can not check the settings of another user");
-    }
-
-    return ResponseEntity.ok().body(String.valueOf(chatNotificationService.isPushNotificationsEnabled(userName)));
-  }
-
-  @PostMapping("/enablePushNotificationsSettings")
-  @Secured("users")
-  @Operation(summary = "Change the status of push notifications enabled/disabled", method = "POST", description = "Change the status of push notifications enabled/disabled")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "403", description = "Unauthorized to access information"),
-      @ApiResponse(responseCode = "500", description = "Internal server error") })
-  public ResponseEntity<String> updatePushNotificationsSettings(HttpServletRequest request,
-                                                                @RequestBody(description = "Notification received from Matrix", required = true)
-                                                                @org.springframework.web.bind.annotation.RequestBody
-                                                                String pushNotificationSetting) {
-    try {
-      JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
-      JsonValue jsonValue = jsonGenerator.createJsonObjectFromString(pushNotificationSetting);
-      JsonValue userNameJsonValue = jsonValue.getElement("userName");
-      if (userNameJsonValue == null
-          || userNameJsonValue.getStringValue() != null && !request.getRemoteUser().equals(userNameJsonValue.getStringValue())) {
-        return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                             .body("Check the status of Push notifications of another user is forbidden");
-      }
-      String userName = userNameJsonValue.getStringValue();
-      boolean pushNotificationStatus = jsonValue.getElement("active") != null && jsonValue.getElement("active").getBooleanValue();
-      chatNotificationService.updatePushNotificationSettings(userName, pushNotificationStatus);
-      return ResponseEntity.ok().body("{}");
-    } catch (Exception e) {
-      LOG.error("Could not update the status of Push notifications of {}", e);
-      return ResponseEntity.internalServerError().build();
-    }
-  }
-
   @GetMapping("findId/{userId}")
   @Secured("users")
   @Operation(summary = "Get the matrix ID of a user", method = "GET", description = "Get the matrix ID of a user")
