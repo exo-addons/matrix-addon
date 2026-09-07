@@ -104,8 +104,6 @@ public class ChatNotificationService {
 
   public static final String        MUTED_ROOMS                  = "mutedRooms";
 
-  public static final String        PUSH_NOTIFICATIONS_SETTINGS  = "pushNotificationsSettings";
-
     /**
    * Default delay a message must stay unread before a device pops it, until
    * the per-device setting story provides a per-subscription value.
@@ -153,31 +151,38 @@ public class ChatNotificationService {
   public void onMatrixPushReceived(String eventId, String roomId, String userName, String pushKey) {
     Room room = matrixService.getById(roomId);
     if (room == null) {
+      LOG.debug("Chat push for {} in {}: unknown room, ignored", userName, roomId);
       return;
     }
     MatrixMessage message = resolveMessage(room, eventId, roomId, pushKey);
     if (message == null) {
       // not an m.room.message event (reaction, state event...) or unresolvable
+      LOG.debug("Chat push for {} in {}: event {} not resolvable as a message, ignored", userName, roomId, eventId);
       return;
     }
     String senderUserName = matrixService.findUserByMatrixId(message.getSender());
     if (StringUtils.equals(senderUserName, userName)) {
+      LOG.debug("Chat push for {} in {}: own message, ignored", userName, roomId);
       return;
     }
     if (isMentioned(message, userName)) {
       sendMentionNotification(message, room, userName, senderUserName);
     }
     if (!canSendPushNotificationToUser(userName, room)) {
+      LOG.debug("Chat push for {} in {}: muted or do-not-disturb, ignored", userName, roomId);
       return;
     }
-    if (!pwaNotificationService.canReceiveDirectNotifications(userName)) {
+    if (!pwaNotificationService.canReceiveDirectNotifications(userName, CHAT_NOTIFICATION_KIND)) {
       // nothing can fire (PWA disabled or no subscribed device): don't buffer
+      LOG.debug("Chat push for {} in {}: no device can receive chat notifications, ignored", userName, roomId);
       return;
     }
     PendingMessage pending = buildPendingMessage(message, room, senderUserName);
     if (pending == null) {
+      LOG.debug("Chat push for {} in {}: pending message could not be built, ignored", userName, roomId);
       return;
     }
+    LOG.debug("Chat push for {} in {}: event {} buffered, deferred popup scheduled", userName, roomId, eventId);
     pendingMessages.computeIfAbsent(pendingKey(userName, roomId), k -> new PendingRoomMessages())
                    .add(pending);
     pwaNotificationService.scheduleDirectNotification(userName,
@@ -271,10 +276,12 @@ public class ChatNotificationService {
   private PwaNotificationMessage buildRoomPopup(String userName, String roomId, String subscriptionId, long messageTimestamp) {
     PendingRoomMessages pending = pendingMessages.get(pendingKey(userName, roomId));
     if (pending == null) {
+      LOG.debug("Chat popup for {} in {} on device {}: no pending messages, cancelled", userName, roomId, subscriptionId);
       return null;
     }
     PendingRoomMessages.Snapshot snapshot = pending.coverIfNotifiable(subscriptionId, messageTimestamp);
     if (snapshot == null) {
+      LOG.debug("Chat popup for {} in {} on device {}: read or already covered, cancelled", userName, roomId, subscriptionId);
       // read meanwhile, or already covered by this device's room popup of a
       // newer fire (coverage is per device: each subscribed device pops once)
       return null;
@@ -564,36 +571,7 @@ public class ChatNotificationService {
     }
   }
 
-  /**
-   * Check the status of the Push notifications on Chat for a specified user
-   * 
-   * @param userName the specified username
-   * @return true if the Push notifications settings is enabled
-   */
-  public boolean isPushNotificationsEnabled(String userName) {
-    SettingValue<String> settingValue = (SettingValue<String>) settingService.get(Context.USER.id(userName),
-                                                                                  USER_CHAT_NOTIFICATION_SCOPE,
-                                                                                  PUSH_NOTIFICATIONS_SETTINGS);
-    return settingValue == null || Boolean.parseBoolean(settingValue.getValue());
-  }
-
-  /**
-   * Set the status of the Push notifications on Chat for a specified user
-   * 
-   * @param userName the specified user
-   * @param pushNotificationStatus the status true or false
-   */
-  public void updatePushNotificationSettings(String userName, boolean pushNotificationStatus) {
-    settingService.set(Context.USER.id(userName),
-                       USER_CHAT_NOTIFICATION_SCOPE,
-                       PUSH_NOTIFICATIONS_SETTINGS,
-                       new SettingValue<>(String.valueOf(pushNotificationStatus)));
-  }
-
   private boolean canSendPushNotificationToUser(String userName, Room room) {
-    if (!this.isPushNotificationsEnabled(userName)) {
-      return false;
-    }
     if (room == null) {
       return false;
     }

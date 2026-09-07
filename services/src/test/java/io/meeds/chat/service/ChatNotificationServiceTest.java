@@ -44,7 +44,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.*;
 
-import static io.meeds.chat.service.ChatNotificationService.PUSH_NOTIFICATIONS_SETTINGS;
 import static io.meeds.chat.service.ChatNotificationService.USER_CHAT_NOTIFICATION_SCOPE;
 import static io.meeds.chat.service.utils.MatrixConstants.MATRIX_MENTION_RECEIVED_NOTIFICATION_PLUGIN;
 import static io.meeds.chat.service.utils.MatrixConstants.MATRIX_ROOM_ID;
@@ -118,7 +117,7 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     Space space = getSpaceInstance(2);
     String roomId = matrixService.getRoomBySpace(space).getRoomId();
     PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
-    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString())).thenReturn(true);
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
     ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
     String eventId = "eventIDOnMatrix";
 
@@ -168,7 +167,7 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     // nothing can fire (PWA disabled or no subscribed device): nothing is
     // buffered nor scheduled
     when(matrixHttpClient.getEventById(eventId, roomId, accessToken)).thenReturn(matrixMessage);
-    when(mockedPwaNotificationService.canReceiveDirectNotifications("demo")).thenReturn(false);
+    when(mockedPwaNotificationService.canReceiveDirectNotifications(eq("demo"), anyString())).thenReturn(false);
     chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
     verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(anyString(), anyString(), anyLong(), any());
   }
@@ -178,7 +177,7 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     lenient().when(userStateModel.getStatus()).thenReturn("available");
     lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
     PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
-    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString())).thenReturn(true);
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
     ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
     LocaleConfigImpl localeConfig = new LocaleConfigImpl();
     localeConfig.setLocale(Locale.ENGLISH);
@@ -329,7 +328,7 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     lenient().when(userStateModel.getStatus()).thenReturn("available");
     lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
     PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
-    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString())).thenReturn(true);
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
     ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
     String eventId = "eventIDOnMatrix";
     Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
@@ -380,22 +379,6 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     // from the generic PWA push pipeline: mentions keep on-site and mail
     // channels, the push popup stays the room's deferred one
     assertTrue(pwaNotificationService.isPluginExcludedFromPush(MATRIX_MENTION_RECEIVED_NOTIFICATION_PLUGIN));
-  }
-
-  @Test
-  void isPushNotificationsEnabled() {
-    when(settingService.get(Context.USER.id("demo"), USER_CHAT_NOTIFICATION_SCOPE, PUSH_NOTIFICATIONS_SETTINGS)).thenReturn(null);
-    boolean result = chatNotificationService.isPushNotificationsEnabled("demo");
-    assertTrue(result);
-  }
-
-  @Test
-  void updatePushNotificationSettings() {
-    chatNotificationService.updatePushNotificationSettings("demo", true);
-    verify(settingService, times(1)).set(eq(Context.USER.id("demo")),
-                                         eq(USER_CHAT_NOTIFICATION_SCOPE),
-                                         eq(PUSH_NOTIFICATIONS_SETTINGS),
-                                         any());
   }
 
   @Test
