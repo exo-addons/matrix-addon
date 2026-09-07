@@ -35,10 +35,10 @@
     },
     {
       "nameId": "Chat-Summarize-Message",
-      "version": "2",
+      "version": "3",
       "applicationId": "chat",
       "extensionId": "chatMessage",
-      "agentNameId": "COMPLETION",
+      "agentNameId": "WRITER",
       "enabled": true,
       "icon": "fas fa-list-ul",
       "permissions": [
@@ -48,10 +48,10 @@
     },
     {
       "nameId": "Chat-Translate-Message",
-      "version": "2",
+      "version": "3",
       "applicationId": "chat",
       "extensionId": "chatMessage",
-      "agentNameId": "COMPLETION",
+      "agentNameId": "WRITER",
       "enabled": true,
       "icon": "fas fa-language",
       "permissions": [
@@ -61,10 +61,10 @@
     },
     {
       "nameId": "Chat-Draft-Reply",
-      "version": "2",
+      "version": "3",
       "applicationId": "chat",
       "extensionId": "chatMessage",
-      "agentNameId": "COMPLETION",
+      "agentNameId": "WRITER",
       "enabled": true,
       "icon": "fas fa-reply",
       "permissions": [
