@@ -23,6 +23,7 @@ import io.meeds.chat.model.MatrixMessage;
 import io.meeds.chat.model.Room;
 import io.meeds.portal.permlink.model.PermanentLinkObject;
 import io.meeds.portal.permlink.service.PermanentLinkService;
+import io.meeds.pwa.model.PwaDirectNotificationBuilder;
 import io.meeds.pwa.model.PwaNotificationMessage;
 import io.meeds.pwa.service.PwaNotificationService;
 import io.meeds.social.space.plugin.SpacePermanentLinkPlugin;
@@ -49,16 +50,13 @@ import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.social.core.space.model.Space;
 import org.exoplatform.social.core.space.spi.SpaceService;
-import org.exoplatform.social.websocket.entity.WebSocketMessage;
-import org.exoplatform.ws.frameworks.cometd.ContinuationService;
 import org.exoplatform.ws.frameworks.json.impl.JsonException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static io.meeds.chat.service.utils.MatrixConstants.*;
 import static io.meeds.pwa.service.PwaNotificationService.*;
@@ -109,32 +107,277 @@ public class ChatNotificationService {
   public static final String        PUSH_NOTIFICATIONS_SETTINGS  = "pushNotificationsSettings";
 
     /**
-   * Sends a notification Creation request to the Push service on the browser
-   * based on the event contents
-   *
-   * @param eventId the event ID
-   * @param userName the user name
-   * @param roomId the room ID
-   * @param unreadCount the number of unread messages
+   * Default delay a message must stay unread before a device pops it, until
+   * the per-device setting story provides a per-subscription value.
    */
-  public void sendCreateNotificationAction(String eventId, String userName, String roomId, int unreadCount) {
-    if (!canSendPushNotificationToUser(userName, roomId)) {
+  public static final long          DEFAULT_UNREAD_DELAY_SECONDS = 300;
+
+  public static final String        CHAT_NOTIFICATION_KIND       = "chat";
+
+  public static final String        SENDS_YOU_A_CHAT_KEY         = "matrix.notification.sendsYouAChat";
+
+  public static final String        MORE_MESSAGES_KEY            = "matrix.notification.moreMessages";
+
+  private static final int          POPUP_BODY_MAX_LENGTH        = 150;
+
+  private static final int          MAX_PENDING_PER_ROOM         = 100;
+
+  private static final Map<String, String> DEFAULT_LABELS        =
+                                                          Map.of(SENDS_YOU_A_CHAT_KEY, "{0} sends you a chat",
+                                                                 MORE_MESSAGES_KEY, "And {0} more messages",
+                                                                   IN_KEY, "in");
+
+  /**
+   * Unread chat messages already handed to the push scheduler, per
+   * user|roomId. Node-local by design: the fire-time guard re-reads it, and a
+   * node restart only loses the pending popups of one delay window — the
+   * in-app experience is unaffected.
+   */
+  private final Map<String, PendingRoomMessages> pendingMessages = new ConcurrentHashMap<>();
+
+  /**
+   * Single entry point of the Synapse push-gateway callback for one recipient:
+   * resolves the event once server-side, then dispatches — a mention
+   * additionally produces the standard on-site/mail notification (its push is
+   * opted out), and every message schedules a deferred self-contained popup
+   * per subscribed device, cancelled at fire time if read meanwhile. One popup
+   * per chatroom: it shows the latest unread message and how many more are
+   * unread, replacing the room's previous popup on the device.
+   *
+   * @param eventId the Matrix event ID
+   * @param roomId the Matrix room ID
+   * @param userName the recipient platform username
+   * @param pushKey the recipient device pushkey (JWT), used to resolve private
+   *          room events
+   */
+  public void onMatrixPushReceived(String eventId, String roomId, String userName, String pushKey) {
+    Room room = matrixService.getById(roomId);
+    if (room == null) {
       return;
     }
-    HashMap<String, Object> params = new HashMap<>();
-    ContinuationService continuationService = CommonsUtils.getService(ContinuationService.class);
-    if (continuationService.isPresent(userName)) {
-      params.put("roomId", roomId);
-      params.put("eventId", eventId);
-      WebSocketMessage webSocketMessage = new WebSocketMessage("chat-ws-message-received", params);
-      continuationService.sendMessage(userName, "/meeds/chat", webSocketMessage);
+    MatrixMessage message = resolveMessage(room, eventId, roomId, pushKey);
+    if (message == null) {
+      // not an m.room.message event (reaction, state event...) or unresolvable
+      return;
+    }
+    String senderUserName = matrixService.findUserByMatrixId(message.getSender());
+    if (StringUtils.equals(senderUserName, userName)) {
+      return;
+    }
+    if (isMentioned(message, userName)) {
+      sendMentionNotification(message, room, userName, senderUserName);
+    }
+    if (!canSendPushNotificationToUser(userName, room)) {
+      return;
+    }
+    if (!pwaNotificationService.canReceiveDirectNotifications(userName)) {
+      // nothing can fire (PWA disabled or no subscribed device): don't buffer
+      return;
+    }
+    PendingMessage pending = buildPendingMessage(message, room, senderUserName);
+    if (pending == null) {
+      return;
+    }
+    pendingMessages.computeIfAbsent(pendingKey(userName, roomId), k -> new PendingRoomMessages())
+                   .add(pending);
+    pwaNotificationService.scheduleDirectNotification(userName,
+                                                      CHAT_NOTIFICATION_KIND,
+                                                      DEFAULT_UNREAD_DELAY_SECONDS,
+                                                      new PwaDirectNotificationBuilder() {
+                                                        @Override
+                                                        public PwaNotificationMessage build(String subscriptionId) {
+                                                          return buildRoomPopup(userName, roomId, subscriptionId, pending.timestamp());
+                                                        }
+
+                                                        @Override
+                                                        public void onSendFailure(String subscriptionId, PwaNotificationMessage popup) {
+                                                          reopenRoomPopup(userName, roomId, subscriptionId, popup);
+                                                        }
+                                                      });
+  }
+
+  /**
+   * Discards the pending popups of a room up to a timestamp: their deferred
+   * sends are cancelled at fire time. Called when the room is read up to that
+   * point (read-anchor story).
+   *
+   * @param userName the recipient platform username
+   * @param roomId the Matrix room ID
+   * @param upToTimestamp read watermark (inclusive)
+   */
+  public void clearPendingMessages(String userName, String roomId, long upToTimestamp) {
+    PendingRoomMessages pending = pendingMessages.get(pendingKey(userName, roomId));
+    if (pending != null) {
+      pending.removeUpTo(upToTimestamp);
+    }
+  }
+
+  private static String pendingKey(String userName, String roomId) {
+    return userName + "|" + roomId;
+  }
+
+  private MatrixMessage resolveMessage(Room room, String eventId, String roomId, String pushKey) {
+    if (room.getSpaceId() != null) {
+      return matrixService.getRoomEvent(eventId, roomId, null);
+    }
+    String accessToken = null;
+    try {
+      accessToken = matrixService.getAccessToken(pushKey);
+    } catch (JsonException | IOException e) {
+      LOG.error("Could not get Matrix Access token for the administrator account !", e);
+    } catch (InterruptedException interruptedException) {
+      Thread.currentThread().interrupt();
+      LOG.error("Could not get Matrix Access token for the administrator account !", interruptedException);
+    }
+    if (StringUtils.isBlank(accessToken)) {
+      return null;
+    }
+    try {
+      return matrixService.getRoomEvent(eventId, roomId, accessToken);
+    } finally {
+      matrixService.invalidateAccessToken(accessToken);
+    }
+  }
+
+  private PendingMessage buildPendingMessage(MatrixMessage message, Room room, String senderUserName) {
+    boolean spaceRoom = room.getSpaceId() != null;
+    String senderFullName;
+    String roomName = null;
+    String icon;
+    if (spaceRoom) {
+      Space space = spaceService.getSpaceById(room.getSpaceId());
+      if (space == null) {
+        return null;
+      }
+      Identity senderIdentity = matrixService.findSpaceMemberByMatrixId(message.getSender(), space);
+      senderFullName = senderIdentity != null ? senderIdentity.getProfile().getFullName() : message.getSender();
+      roomName = space.getDisplayName();
+      icon = space.getAvatarUrl();
     } else {
-      String encodedId = URLEncoder.encode(eventId + "|" + roomId, StandardCharsets.UTF_8).replace("+", "%20");
-      params.put(EVENT_NOTIFICATION_ID_PARAM_NAME, encodedId);
-      params.put("username", userName);
-      params.put(EVENT_ACTION_PARAM_NAME, "open");
-      params.put(EVENT_NOTIFICATION_TYPE_PARAM_NAME, "CHAT_NOTIFICATION");
-      pwaNotificationService.create(params);
+      Identity senderIdentity = identityManager.getOrCreateUserIdentity(senderUserName);
+      senderFullName = senderIdentity != null ? senderIdentity.getProfile().getFullName() : message.getSender();
+      icon = senderIdentity != null ? senderIdentity.getProfile().getAvatarUrl() : null;
+    }
+    return new PendingMessage(message.getEventId(),
+                              message.getTimeStamp(),
+                              senderFullName,
+                              roomName,
+                              spaceRoom,
+                              StringUtils.abbreviate(message.getMessageContent(), POPUP_BODY_MAX_LENGTH),
+                              icon,
+                              getMessageLink(message));
+  }
+
+  private PwaNotificationMessage buildRoomPopup(String userName, String roomId, String subscriptionId, long messageTimestamp) {
+    PendingRoomMessages pending = pendingMessages.get(pendingKey(userName, roomId));
+    if (pending == null) {
+      return null;
+    }
+    PendingRoomMessages.Snapshot snapshot = pending.coverIfNotifiable(subscriptionId, messageTimestamp);
+    if (snapshot == null) {
+      // read meanwhile, or already covered by this device's room popup of a
+      // newer fire (coverage is per device: each subscribed device pops once)
+      return null;
+    }
+    PendingMessage latest = snapshot.latest();
+    try {
+      LocaleConfig localeConfig = pwaNotificationService.getLocaleConfig(userName);
+      Locale locale = localeConfig.getLocale();
+      String title = latest.spaceRoom() ? latest.senderFullName() + " " + formatLabel(IN_KEY, locale, "")
+          + " " + latest.roomName() : formatLabel(SENDS_YOU_A_CHAT_KEY, locale, latest.senderFullName());
+      String body = latest.body();
+      if (snapshot.moreCount() > 0) {
+        body += "\n" + formatLabel(MORE_MESSAGES_KEY, locale, String.valueOf(snapshot.moreCount()));
+      }
+      PwaNotificationMessage popup = new PwaNotificationMessage();
+      popup.setTitle(title);
+      popup.setBody(body);
+      popup.setIcon(latest.icon());
+      popup.setUrl(latest.link());
+      popup.setTag(roomId);
+      popup.setRenotify(true);
+      popup.setLang(locale.toLanguageTag());
+      popup.setData(Map.of("roomId", roomId,
+                           "eventId", latest.eventId(),
+                           "ts", String.valueOf(latest.timestamp())));
+      return popup;
+    } catch (Exception e) {
+      // a failed build must not consume the device's popup: re-arm and rethrow
+      pending.reopenCover(subscriptionId, latest.timestamp());
+      throw e;
+    }
+  }
+
+  private void reopenRoomPopup(String userName, String roomId, String subscriptionId, PwaNotificationMessage popup) {
+    PendingRoomMessages pending = pendingMessages.get(pendingKey(userName, roomId));
+    if (pending == null || popup == null || popup.getData() == null) {
+      return;
+    }
+    String coveredTimestamp = popup.getData().get("ts");
+    if (coveredTimestamp != null) {
+      // the push never reached the device's push service: make the batch
+      // notifiable again for that device unless a newer fire covered further
+      pending.reopenCover(subscriptionId, Long.parseLong(coveredTimestamp));
+    }
+  }
+
+  private String formatLabel(String key, Locale locale, String param) {
+    String pattern = resourceBundleService.getSharedString(key, locale);
+    if (StringUtils.isBlank(pattern) || StringUtils.equals(pattern, key)) {
+      pattern = DEFAULT_LABELS.get(key);
+    }
+    return pattern.replace("{0}", param);
+  }
+
+  private record PendingMessage(String eventId,
+                                long timestamp,
+                                String senderFullName,
+                                String roomName,
+                                boolean spaceRoom,
+                                String body,
+                                String icon,
+                                String link) {
+  }
+
+  private static final class PendingRoomMessages {
+
+    private final NavigableMap<Long, PendingMessage> messages               = new TreeMap<>();
+
+    /**
+     * Per-device "popped up to" watermark: each subscribed device shows the
+     * room popup once per message batch, whatever the other devices did.
+     */
+    private final Map<String, Long>                  coveredBySubscription  = new HashMap<>();
+
+    synchronized void add(PendingMessage message) {
+      messages.put(message.timestamp(), message);
+      while (messages.size() > MAX_PENDING_PER_ROOM) {
+        messages.pollFirstEntry();
+      }
+    }
+
+    synchronized void removeUpTo(long timestamp) {
+      messages.headMap(timestamp, true).clear();
+    }
+
+    synchronized Snapshot coverIfNotifiable(String subscriptionId, long timestamp) {
+      long covered = coveredBySubscription.getOrDefault(subscriptionId, 0l);
+      if (timestamp <= covered || !messages.containsKey(timestamp)) {
+        return null;
+      }
+      Map.Entry<Long, PendingMessage> last = messages.lastEntry();
+      coveredBySubscription.put(subscriptionId, last.getKey());
+      return new Snapshot(last.getValue(), messages.size() - 1);
+    }
+
+    synchronized void reopenCover(String subscriptionId, long expectedCovered) {
+      Long covered = coveredBySubscription.get(subscriptionId);
+      if (covered != null && covered == expectedCovered) {
+        coveredBySubscription.remove(subscriptionId);
+      }
+    }
+
+    record Snapshot(PendingMessage latest, int moreCount) {
     }
   }
 
@@ -208,40 +451,7 @@ public class ChatNotificationService {
     return createNotification(message, userName);
   }
 
-  /**
-   * Creates a web/Mail notification for mentions in space Chat rooms
-   * 
-   * @param eventId the event ID
-   * @param roomId the room ID
-   * @param userName the username of the receiver of the notification
-   * @param pushKey jwt token of one of the users in case the room is private
-   * @return true if the Mention notification is created, false otherwise
-   */
-  public boolean createMentionNotification(String eventId, String roomId, String userName, String pushKey) {
-    Room room = matrixService.getById(roomId);
-    MatrixMessage message;
-    if (room == null) {
-      return false;
-    }
-    if (room.getSpaceId() != null) {
-      message = matrixService.getRoomEvent(eventId, roomId, null);
-    } else {
-      String accessToken = null;
-      try {
-        accessToken = matrixService.getAccessToken(pushKey);
-      } catch (JsonException | IOException e) {
-        LOG.error("Could not get Matrix Access token for the administrator account !", e);
-      } catch (InterruptedException interruptedException) {
-        Thread.currentThread().interrupt();
-        LOG.error("Could not get Matrix Access token for the administrator account !", interruptedException);
-      }
-      if (StringUtils.isBlank(accessToken)) {
-        return false;
-      }
-      message = matrixService.getRoomEvent(eventId, roomId, accessToken);
-      // Invalidate the access token
-      matrixService.invalidateAccessToken(accessToken);
-    }
+  private boolean isMentioned(MatrixMessage message, String userName) {
     Identity receiverIdentity = identityManager.getOrCreateUserIdentity(userName);
     String matrixReceiverId = userName;
     if (receiverIdentity != null
@@ -250,41 +460,43 @@ public class ChatNotificationService {
                                                                                     .getProperties()
                                                                                     .get(USER_MATRIX_ID));
     }
-    String roomName = "";
-    String senderFullName = "";
-    String roomAvatarUrl = "";
-    if (message != null && isUserIncludedInMentions(message, matrixReceiverId)) {
-      Identity senderIdentity = identityManager.getOrCreateUserIdentity(matrixService.findUserByMatrixId(message.getSender()));
-      if (senderIdentity != null) {
-        senderFullName = senderIdentity.getProfile().getFullName();
-      }
-      if (room.getSpaceId() != null) {
-        Space space = spaceService.getSpaceById(room.getSpaceId());
-        roomName = space.getDisplayName();
-        roomAvatarUrl = space.getAvatarUrl();
-      } else if (senderIdentity != null) {
-        roomName = senderIdentity.getProfile().getFullName();
-        roomAvatarUrl = senderIdentity.getProfile().getAvatarUrl();
-      } else {
-        roomName = message.getSender();
-      }
+    return isUserIncludedInMentions(message, matrixReceiverId);
+  }
 
-      NotificationContext ctx = NotificationContextImpl.cloneInstance();
-      ctx.append(MATRIX_ROOM_ID, message.getRoomId());
-      ctx.append(MATRIX_MESSAGE_SENDER, matrixService.findUserByMatrixId(message.getSender()));
-      ctx.append(MATRIX_ROOM_NAME, roomName);
-      ctx.append(MATRIX_ROOM_TYPE, room.getSpaceId() != null ? "SPACE" : "ONE_TO_ONE");
-      ctx.append(MATRIX_ROOM_AVATAR, roomAvatarUrl);
-      ctx.append(MATRIX_MESSAGE_CONTENT, message.getMessageContent());
-      ctx.append(MATRIX_ROOM_MEMBER, userName);
-      ctx.append(MATRIX_MESSAGE_SENDER_FULLNAME, senderFullName);
-      String permalink = getMessageLink(message);
-      ctx.append(MATRIX_MESSAGE_URL, StringUtils.isNotBlank(permalink) ? permalink : "");
-      return ctx.getNotificationExecutor()
-                .with(ctx.makeCommand(PluginKey.key(MATRIX_MENTION_RECEIVED_NOTIFICATION_PLUGIN)))
-                .execute(ctx);
+  /**
+   * Creates the standard mention notification (on-site and mail channels; its
+   * push delivery is opted out so the popup stays the room's deferred one).
+   */
+  private boolean sendMentionNotification(MatrixMessage message, Room room, String userName, String senderUserName) {
+    Identity senderIdentity = identityManager.getOrCreateUserIdentity(senderUserName);
+    String senderFullName = senderIdentity != null ? senderIdentity.getProfile().getFullName() : "";
+    String roomName;
+    String roomAvatarUrl = "";
+    if (room.getSpaceId() != null) {
+      Space space = spaceService.getSpaceById(room.getSpaceId());
+      roomName = space.getDisplayName();
+      roomAvatarUrl = space.getAvatarUrl();
+    } else if (senderIdentity != null) {
+      roomName = senderIdentity.getProfile().getFullName();
+      roomAvatarUrl = senderIdentity.getProfile().getAvatarUrl();
+    } else {
+      roomName = message.getSender();
     }
-    return false;
+
+    NotificationContext ctx = NotificationContextImpl.cloneInstance();
+    ctx.append(MATRIX_ROOM_ID, message.getRoomId());
+    ctx.append(MATRIX_MESSAGE_SENDER, senderUserName);
+    ctx.append(MATRIX_ROOM_NAME, roomName);
+    ctx.append(MATRIX_ROOM_TYPE, room.getSpaceId() != null ? "SPACE" : "ONE_TO_ONE");
+    ctx.append(MATRIX_ROOM_AVATAR, roomAvatarUrl);
+    ctx.append(MATRIX_MESSAGE_CONTENT, message.getMessageContent());
+    ctx.append(MATRIX_ROOM_MEMBER, userName);
+    ctx.append(MATRIX_MESSAGE_SENDER_FULLNAME, senderFullName);
+    String permalink = getMessageLink(message);
+    ctx.append(MATRIX_MESSAGE_URL, StringUtils.isNotBlank(permalink) ? permalink : "");
+    return ctx.getNotificationExecutor()
+              .with(ctx.makeCommand(PluginKey.key(MATRIX_MENTION_RECEIVED_NOTIFICATION_PLUGIN)))
+              .execute(ctx);
   }
 
   private String getMessageLink(MatrixMessage message) {
@@ -378,11 +590,10 @@ public class ChatNotificationService {
                        new SettingValue<>(String.valueOf(pushNotificationStatus)));
   }
 
-  private boolean canSendPushNotificationToUser(String userName, String roomId) {
+  private boolean canSendPushNotificationToUser(String userName, Room room) {
     if (!this.isPushNotificationsEnabled(userName)) {
       return false;
     }
-    Room room = matrixService.getById(roomId);
     if (room == null) {
       return false;
     }
@@ -391,7 +602,7 @@ public class ChatNotificationService {
       UserSetting userSetting = getUserSettingService().get(userName);
       roomMuted = userSetting != null && userSetting.isSpaceMuted(room.getSpaceId());
     } else {
-      roomMuted = isPrivateRoomMutedForUser(userName, roomId);
+      roomMuted = isPrivateRoomMutedForUser(userName, room.getRoomId());
     }
     UserStateModel userStatus = getUserStateService().getUserState(userName);
     return !userStatus.getStatus().equals(USER_STATUS_DO_NOT_DISTURB) && !roomMuted;
