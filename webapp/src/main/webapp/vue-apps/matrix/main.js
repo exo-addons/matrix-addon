@@ -118,7 +118,6 @@ window.Object.defineProperty(Vue.prototype, '$matrixUtils', {
 
 Vue.prototype.$filesIconsExtension = extensionRegistry.loadExtensions('chat', 'files-icons-extension');
 
-Vue.prototype.$socialWebSocket.initCometd('/meeds/chat');
 
 const appId = 'matrixChatButton';
 const lang = window?.eXo?.env?.portal?.language || 'fr';

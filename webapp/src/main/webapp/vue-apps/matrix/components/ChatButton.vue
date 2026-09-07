@@ -180,7 +180,6 @@ export default {
     document.addEventListener('user-status-updated', this.handleCurrentUserStatusUpdated);
     document.addEventListener('space-unmuted', this.handleSpaceUnmute);
     document.addEventListener('space-muted', this.handleSpaceMute);
-    document.addEventListener('chat-ws-message-received', this.handleWSMessageReceived);
     window.addEventListener('beforeunload', this.handleBeforeUnload);
     window.addEventListener('storage', this.handleLocaleStorageUpdate);
     this.$root.$on('delete-message',  this.openDeleteMessageDialog);
@@ -216,7 +215,6 @@ export default {
     document.removeEventListener('matrix-room-mark-full-read', this.updateUnreadMessages);
     document.removeEventListener('user-status-updated', this.handleCurrentUserStatusUpdated);
     document.removeEventListener('space-unmuted', this.handleSpaceUnmute);
-    document.removeEventListener('chat-ws-message-received', this.handleWSMessageReceived);
     document.removeEventListener('space-muted', this.handleSpaceMute);
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
     window.removeEventListener('storage', this.handleLocaleStorageUpdate);
@@ -940,18 +938,6 @@ export default {
         clearInterval(this.presencePollingInterval);
         this.presencePollingInterval = null;
         localStorage.removeItem(this.presencePollingKey);
-      }
-    },
-    handleWSMessageReceived({detail: {wsEventName, message}}) {
-      if (navigator.serviceWorker) {
-        navigator.serviceWorker.ready.then((registration) => {
-          const messageObject = {
-            type: 'CHAT_NOTIFICATION',
-            eventId: message.eventId,
-            roomId: message.roomId,
-          };
-          registration.active.postMessage(messageObject);
-        });
       }
     },
   }

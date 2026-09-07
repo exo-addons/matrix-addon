@@ -227,11 +227,6 @@ public class MatrixRest implements ResourceContainer {
                 """.formatted(pushKey);
           }
           if (StringUtils.isNotBlank(userName)) {
-            int unreadCount = 0;
-            JsonValue element = notifJsonValue.getElement("counts");
-            if (element != null && element.getElement("unread") != null) {
-              unreadCount = element.getElement("unread").getIntValue();
-            }
             String roomId = "";
             if (notifJsonValue.getElement("room_id") != null) {
               roomId = notifJsonValue.getElement("room_id").getStringValue();
@@ -240,9 +235,8 @@ public class MatrixRest implements ResourceContainer {
             if (notifJsonValue.getElement("event_id") != null) {
               eventId = notifJsonValue.getElement("event_id").getStringValue();
             }
-            if(StringUtils.isNotBlank(eventId) && StringUtils.isNotBlank(roomId)) {
-              chatNotificationService.createMentionNotification(eventId, roomId, userName, pushKey);
-              chatNotificationService.sendCreateNotificationAction(eventId, userName, roomId, unreadCount);
+            if (StringUtils.isNotBlank(eventId) && StringUtils.isNotBlank(roomId)) {
+              chatNotificationService.onMatrixPushReceived(eventId, roomId, userName, pushKey);
             }
           }
         }
