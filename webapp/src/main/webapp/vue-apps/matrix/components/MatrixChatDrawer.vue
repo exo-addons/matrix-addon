@@ -15,8 +15,9 @@
  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 -->
 <template>
-  <exo-drawer
+  <pinneable-drawer
     ref="meedsChatDrawer"
+    app-name="chat"
     id="meedsChatDrawer"
     :loading="loading"
     :filter-placeholder="$t('matrix.rooms.filter.placeholder')"
@@ -130,7 +131,7 @@
         @room-active-changed="handleRoomActiveState"
         @loading="loading = $event" />
     </template>
-  </exo-drawer>
+  </pinneable-drawer>
 </template>
 <script>
 export default {
