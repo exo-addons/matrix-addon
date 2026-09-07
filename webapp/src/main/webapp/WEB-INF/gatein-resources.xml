@@ -239,11 +239,15 @@
   </module>
 
   <module>
-    <name>MatrixUserSettingsNotificationsExtension</name>
-    <load-group>UserSettingNotificationsGRP</load-group>
+    <name>MatrixPWAUserSettings</name>
+    <load-group>pwaUserSettingsGRP</load-group>
     <script>
-      <path>/js/userSettingsNotificationsExtension.bundle.js</path>
+      <minify>false</minify>
+      <path>/js/chatPwaSettings.bundle.js</path>
     </script>
+    <depends>
+      <module>commonVueComponents</module>
+    </depends>
     <depends>
       <module>vue</module>
     </depends>
@@ -255,9 +259,6 @@
     </depends>
     <depends>
       <module>extensionRegistry</module>
-    </depends>
-    <depends>
-      <module>commonVueComponents</module>
     </depends>
   </module>
 
