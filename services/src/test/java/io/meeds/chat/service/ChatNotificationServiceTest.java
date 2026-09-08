@@ -374,6 +374,95 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
   }
 
   @Test
+  void markRoomAsReadPostsReceiptRecordsWatermarkAndCancelsPopups() throws Exception {
+    lenient().when(userStateModel.getStatus()).thenReturn("available");
+    lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
+    PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
+    ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
+    LocaleConfigImpl localeConfig = new LocaleConfigImpl();
+    localeConfig.setLocale(Locale.ENGLISH);
+    localeConfig.setOrientation(Orientation.LT);
+    lenient().when(mockedPwaNotificationService.getLocaleConfig(anyString())).thenReturn(localeConfig);
+
+    // tom (manager) writes, demo (member) reads; john is not a member
+    Identity tomIdentity = identityManager.getOrCreateUserIdentity("tom");
+    String senderIdOnMatrix = matrixService.saveUserAccount(tomIdentity, true);
+    Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
+    matrixService.saveUserAccount(demoIdentity, true);
+    Space space = getSpaceInstance(5);
+    spacesToDelete.add(space);
+    String roomId = matrixService.getRoomBySpace(space).getRoomId();
+    when(matrixHttpClient.getEventById("evtRead", roomId, accessToken))
+                                                                       .thenReturn(new MatrixMessage("evtRead",
+                                                                                                     roomId,
+                                                                                                     "m.room.message",
+                                                                                                     "to be read",
+                                                                                                     "m.text",
+                                                                                                     senderIdOnMatrix,
+                                                                                                     new ArrayList<>(),
+                                                                                                     5000L));
+    chatNotificationService.onMatrixPushReceived("evtRead", roomId, "demo", "pushKey");
+    ArgumentCaptor<PwaDirectNotificationBuilder> builders = ArgumentCaptor.forClass(PwaDirectNotificationBuilder.class);
+    verify(mockedPwaNotificationService).scheduleDirectNotification(eq("demo"), anyString(), anyLong(), builders.capture());
+
+    // the popup carries the mark-as-read quick action
+    PwaNotificationMessage popup = builders.getValue().build("deviceA");
+    assertNotNull(popup);
+    assertEquals(1, popup.getActions().size());
+    assertEquals(ChatNotificationService.MARK_READ_ACTION, popup.getActions().get(0).getAction());
+    assertEquals("Mark as read", popup.getActions().get(0).getTitle());
+
+    // demo reads the room up to that event: receipt posted with demo's own token,
+    // watermark recorded, the room's pending popups cancelled for every device
+    when(matrixHttpClient.getAccessToken(anyString())).thenReturn("sys_demoUserAccessToken");
+    chatNotificationService.markRoomAsRead("demo", roomId, "evtRead", 5000L);
+    verify(matrixHttpClient).sendReadReceipt(eq(roomId), eq("evtRead"), eq("sys_demoUserAccessToken"));
+    verify(settingService).set(eq(Context.USER.id("demo")),
+                               eq(USER_CHAT_NOTIFICATION_SCOPE),
+                               eq(ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId),
+                               any());
+    assertNull(builders.getValue().build("deviceB"));
+
+    // the durable watermark alone cancels a fire (cluster / restart): a fresh
+    // buffer for the room, watermark stored past the message
+    chatNotificationService.onMatrixPushReceived("evtRead", roomId, "demo", "pushKey");
+    doReturn(SettingValue.create("9999")).when(settingService)
+                                          .get(Context.USER.id("demo"),
+                                               USER_CHAT_NOTIFICATION_SCOPE,
+                                               ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId);
+    verify(mockedPwaNotificationService, times(2)).scheduleDirectNotification(eq("demo"), anyString(), anyLong(), builders.capture());
+    assertNull(builders.getValue().build("deviceC"));
+
+    // a client timestamp in the future is clamped to now
+    doReturn(null).when(settingService)
+                  .get(Context.USER.id("demo"),
+                       USER_CHAT_NOTIFICATION_SCOPE,
+                       ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId);
+    chatNotificationService.markRoomAsRead("demo", roomId, "evtRead", Long.MAX_VALUE);
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    ArgumentCaptor<SettingValue<?>> saved = ArgumentCaptor.forClass((Class) SettingValue.class);
+    verify(settingService, times(2)).set(eq(Context.USER.id("demo")),
+                                         eq(USER_CHAT_NOTIFICATION_SCOPE),
+                                         eq(ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId),
+                                         saved.capture());
+    assertTrue(Long.parseLong(String.valueOf(saved.getValue().getValue())) <= System.currentTimeMillis());
+
+    // no receipt posted (user without Matrix account): nothing is marked read
+    when(matrixHttpClient.getAccessToken(anyString())).thenReturn(null);
+    ((org.exoplatform.services.cache.ExoCache<?, ?>) ReflectionTestUtils.getField(matrixService, "userAccessTokensCache")).clearCache();
+    assertThrows(IllegalStateException.class,
+                 () -> chatNotificationService.markRoomAsRead("demo", roomId, "evtRead", null));
+
+    // guards of the read anchor
+    assertThrows(ObjectNotFoundException.class,
+                 () -> chatNotificationService.markRoomAsRead("demo", "!unknown:matrix.meeds.tn", "evt", null));
+    assertThrows(IllegalAccessException.class,
+                 () -> chatNotificationService.markRoomAsRead("john", roomId, "evtRead", null));
+    assertThrows(IllegalArgumentException.class, () -> chatNotificationService.markRoomAsRead("demo", roomId, "", null));
+  }
+
+  @Test
   void mentionNotificationsAreExcludedFromPush() {
     // ChatPushNotificationIntegration registers the mention plugin as excluded
     // from the generic PWA push pipeline: mentions keep on-site and mail

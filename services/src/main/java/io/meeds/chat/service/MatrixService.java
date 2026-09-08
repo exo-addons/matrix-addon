@@ -1321,6 +1321,23 @@ public class MatrixService {
   }
 
   /**
+   * Marks a room as read for a user up to an event, with the user's own Matrix
+   * identity (server-side read anchor): posts the {@code m.read} receipt so
+   * every client of the user converges through Matrix sync.
+   *
+   * @param userName the platform user
+   * @param roomId the room (local or full id)
+   * @param eventId the event read up to (high-water mark)
+   * @return true when the receipt was posted
+   */
+  public boolean markRoomAsRead(String userName, String roomId, String eventId) {
+    return callAsUser(userName, false, accessToken -> {
+      matrixHttpClient.sendReadReceipt(roomId, eventId, accessToken);
+      return true;
+    });
+  }
+
+  /**
    * Returns a Matrix access token for the given Meeds user, minted with the same
    * JWT login the browser uses so server-side reads/writes happen with the user's
    * own identity and permissions. Tokens are cached per user to avoid creating a

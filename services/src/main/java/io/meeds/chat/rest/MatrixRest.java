@@ -682,6 +682,33 @@ public class MatrixRest implements ResourceContainer {
     }
   }
 
+  @PostMapping("rooms/{roomId}/read")
+  @Secured("users")
+  @Operation(summary = "Marks a room as read up to an event for the current user", method = "POST",
+             description = "Server-side read anchor: posts the Matrix read receipt with the user's identity, records the read watermark and cancels the pending push popups")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Room marked as read"),
+      @ApiResponse(responseCode = "400", description = "Invalid parameters"),
+      @ApiResponse(responseCode = "403", description = "Not a member of the room"),
+      @ApiResponse(responseCode = "404", description = "Room not found") })
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void markRoomAsRead(HttpServletRequest request,
+                             @PathVariable("roomId")
+                             String roomId,
+                             @RequestParam("eventId")
+                             String eventId,
+                             @RequestParam(value = "ts", required = false)
+                             Long readTimestamp) {
+    try {
+      chatNotificationService.markRoomAsRead(request.getRemoteUser(), roomId, eventId, readTimestamp);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
   @GetMapping("findId/{userId}")
   @Secured("users")
   @Operation(summary = "Get the matrix ID of a user", method = "GET", description = "Get the matrix ID of a user")
