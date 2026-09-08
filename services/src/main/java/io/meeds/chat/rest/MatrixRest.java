@@ -31,7 +31,6 @@ import io.meeds.chat.service.ChatNotificationService;
 import io.meeds.chat.service.MatrixSynchronizationService;
 import io.meeds.chat.service.utils.AsyncTaskUtils;
 import io.meeds.chat.service.model.*;
-import io.meeds.pwa.model.PwaNotificationMessage;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.parameters.RequestBody;
@@ -623,41 +622,6 @@ public class MatrixRest implements ResourceContainer {
     }
   }
 
-  @PutMapping("notification/{roomId}/{eventId}/{ts}")
-  @Secured("users")
-  @Operation(summary = "Get the details of a notification based on the event details", method = "GET", description = "Get the details of a notification based on the event details")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "404", description = "User not found"),
-      @ApiResponse(responseCode = "500", description = "Internal server error") })
-  public PwaNotificationMessage getNotification(HttpServletRequest request, @PathVariable("roomId")
-  String roomId, @PathVariable("eventId")
-  String eventId, @PathVariable("ts")
-  String timeStamp,
-                                                @RequestBody(description = "Access token of the user", required = false)
-                                                @org.springframework.web.bind.annotation.RequestBody(required = false)
-                                                String accessToken) {
-    String currentUserName = request.getRemoteUser();
-    if (eventId == null) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "event id is mandatory");
-    }
-    long ts = 0L;
-    try {
-      ts = Long.parseLong(timeStamp);
-    } catch (NumberFormatException nfe) {
-      // Do nothing, we consider Timestamp as 0 //NOSONAR
-    }
-    PwaNotificationMessage pwaMessage = chatNotificationService.createNotification(eventId,
-                                                                                   roomId,
-                                                                                   currentUserName,
-                                                                                   ts,
-                                                                                   accessToken);
-    if (pwaMessage != null) {
-      return pwaMessage;
-    } else {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Event not found or it is not a chat message");
-    }
-  }
-
   @PostMapping("/muteRoom")
   @Secured("users")
   @Operation(summary = "Mute a private room for the current user", description = "Adds a private room to the user's muted list")
@@ -689,7 +653,8 @@ public class MatrixRest implements ResourceContainer {
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Room marked as read"),
       @ApiResponse(responseCode = "400", description = "Invalid parameters"),
       @ApiResponse(responseCode = "403", description = "Not a member of the room"),
-      @ApiResponse(responseCode = "404", description = "Room not found") })
+      @ApiResponse(responseCode = "404", description = "Room not found"),
+      @ApiResponse(responseCode = "500", description = "The Matrix read receipt could not be posted (matrix.markRoomAsRead.receiptNotPosted): nothing was marked read") })
   @ResponseStatus(HttpStatus.NO_CONTENT)
   public void markRoomAsRead(HttpServletRequest request,
                              @PathVariable("roomId")
@@ -706,6 +671,8 @@ public class MatrixRest implements ResourceContainer {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 

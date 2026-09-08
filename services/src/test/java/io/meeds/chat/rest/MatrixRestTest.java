@@ -787,6 +787,17 @@ class MatrixRestTest {
 
     mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").param("eventId", "$evt"))
            .andExpect(status().isForbidden());
+
+    doThrow(new IllegalArgumentException("matrix.markRoomAsRead.invalidParameters")).when(chatNotificationService)
+                                                                                  .markRoomAsRead("user", "!room:matrix.meeds.tn", "bad", null);
+    mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").with(simpleUser()).param("eventId", "bad"))
+           .andExpect(status().isBadRequest());
+
+    // the receipt could not be posted: nothing was marked read, the caller must know
+    doThrow(new IllegalStateException("matrix.markRoomAsRead.receiptNotPosted")).when(chatNotificationService)
+                                                                              .markRoomAsRead("user", "!room:matrix.meeds.tn", "$down", null);
+    mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").with(simpleUser()).param("eventId", "$down"))
+           .andExpect(status().isInternalServerError());
   }
 
 }

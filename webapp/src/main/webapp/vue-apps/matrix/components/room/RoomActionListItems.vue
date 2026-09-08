@@ -135,6 +135,8 @@ export default {
             detail: {roomId: this.room.id}
           }));
           this.$root.$emit('alert-message', this.$t('matrix.room.markRead.success'), 'success');
+        }).catch(() => {
+          this.$root.$emit('alert-message', this.$t('matrix.room.markRead.error'), 'error');
         });
       });
     },

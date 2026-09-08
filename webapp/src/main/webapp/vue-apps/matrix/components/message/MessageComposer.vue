@@ -267,7 +267,8 @@ export default {
         }
 
         const eventId = await this.$matrixService.sendMessage(message, this.room.id);
-        this.$matrixService.markMessageAsRead(this.room.id, eventId);
+        this.$matrixService.markMessageAsRead(this.room.id, eventId)
+          .catch(e => console.error('Failed to mark own message as read:', this.room.id, e));
         this.$matrixService.sendTyping(this.room.id, false);
         clearTimeout(this.sendingTypingTimeout);
         if (!this.messageToEdit) {

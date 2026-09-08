@@ -495,7 +495,7 @@ export default {
             detail: {roomId: roomId}
           }));
           this.lastMarkedReadEventId = eventId;
-        });
+        }).catch(e => console.error('Failed to mark room as read:', roomId, e));
       }
     },
     resetLocalUnseenData({detail: {roomId, userId}}) {

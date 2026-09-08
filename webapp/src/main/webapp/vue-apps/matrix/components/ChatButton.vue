@@ -666,11 +666,11 @@ export default {
           updatedRoom.lastMessage.redacted = true;
 
           if (updatedRoom.unreadMessages === 1) {
-            updatedRoom.unreadMessages--;
-            this.updateTotalUnread(1, true);
+            // the count follows the recorded read state, not the attempt
             this.$matrixService.markRoomAsFullyRead(roomId, eventId).then(() => {
+              this.updateTotalUnread(1, true);
               updatedRoom.unreadMessages = 0;
-            });
+            }).catch(e => console.error('Failed to mark room as read:', roomId, e));
           }
         }
 
@@ -870,16 +870,23 @@ export default {
       if (!unreadRooms.length) {
         return;
       }
-      Promise.all(unreadRooms.map(room =>
+      Promise.allSettled(unreadRooms.map(room =>
         this.$matrixService.getRoomLastMessageEventId(room.id).then(eventId =>
           eventId && this.$matrixService.markRoomAsFullyRead(room.id, eventId).then(() => {
             document.dispatchEvent(new CustomEvent('matrix-room-mark-full-read', {
               detail: {roomId: room.id}
             }));
           })
-        ).catch(e => console.error('Failed to mark room as read:', room.id, e))
-      )).then(() => {
-        this.$root.$emit('alert-message', this.$t('matrix.chat.markAllRead.success'), 'success');
+        )
+      )).then(results => {
+        const failed = results.filter(result => result.status === 'rejected');
+        failed.forEach(result => console.error('Failed to mark room as read:', result.reason));
+        // the server records the read state: only say so when it did for every room
+        if (failed.length) {
+          this.$root.$emit('alert-message', this.$t('matrix.room.markRead.error'), 'error');
+        } else {
+          this.$root.$emit('alert-message', this.$t('matrix.chat.markAllRead.success'), 'success');
+        }
       });
     },
     matchesFilter(room, filter) {
