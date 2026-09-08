@@ -227,6 +227,10 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     assertTrue(popup.getBody().startsWith("second message"));
     assertTrue(popup.getBody().contains("1 more"));
     assertEquals("evt2", popup.getData().get("eventId"));
+    assertEquals(roomId, popup.getData().get("roomId"));
+    // click opens the room in the already-open page instead of reloading it
+    assertEquals(ChatNotificationService.OPEN_ROOM_CLIENT_ACTION,
+                 popup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_DATA));
 
     // second fire on the SAME device: already covered by its displayed popup
     assertNull(builders.getAllValues().get(1).build("device1"));

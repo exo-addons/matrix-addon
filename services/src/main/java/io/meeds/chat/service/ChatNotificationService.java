@@ -122,6 +122,12 @@ public class ChatNotificationService {
 
   public static final String        MARK_READ_LABEL_KEY          = "pwa.notification.action.markAsRead";
 
+  /**
+   * In-page action of a room popup click (DOM event name the chat quick-actions
+   * bundle listens to, see {@code Constants.js ACTION_OPEN_CHAT_ROOM_FROM_PUSH})
+   */
+  public static final String        OPEN_ROOM_CLIENT_ACTION      = "meeds-chat-open-room-from-push";
+
   public static final String        READ_WATERMARK_KEY_PREFIX    = "readWatermark:";
 
   private static final int          POPUP_BODY_MAX_LENGTH        = 150;
@@ -395,7 +401,10 @@ public class ChatNotificationService {
       popup.setActions(List.of(new PwaNotificationAction(formatLabel(MARK_READ_LABEL_KEY, locale, ""), MARK_READ_ACTION)));
       popup.setData(Map.of("roomId", roomId,
                            "eventId", latest.eventId(),
-                           "ts", String.valueOf(latest.timestamp())));
+                           "ts", String.valueOf(latest.timestamp()),
+                           // click: open the room in the page already open, or
+                           // follow the url (which opens the room on load)
+                           PwaNotificationService.DIRECT_CLIENT_ACTION_DATA, OPEN_ROOM_CLIENT_ACTION));
       return popup;
     } catch (Exception e) {
       // a failed build must not consume the device's popup: re-arm and rethrow
