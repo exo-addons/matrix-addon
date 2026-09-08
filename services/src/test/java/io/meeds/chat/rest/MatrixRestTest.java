@@ -38,6 +38,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.mockito.Mockito.doThrow;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.ArrayList;
@@ -764,4 +766,27 @@ class MatrixRestTest {
         }
         """));
   }
+
+  @Test
+  void markRoomAsRead() throws Exception {
+    mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").with(simpleUser())
+                                                                          .param("eventId", "$evt")
+                                                                          .param("ts", "5000"))
+           .andExpect(status().isNoContent());
+    verify(chatNotificationService).markRoomAsRead("user", "!room:matrix.meeds.tn", "$evt", 5000L);
+
+    doThrow(new ObjectNotFoundException("not found")).when(chatNotificationService)
+                                                     .markRoomAsRead("user", "!unknown:matrix.meeds.tn", "$evt", null);
+    mockMvc.perform(post(REST_PATH + "/rooms/!unknown:matrix.meeds.tn/read").with(simpleUser()).param("eventId", "$evt"))
+           .andExpect(status().isNotFound());
+
+    doThrow(new IllegalAccessException("not a member")).when(chatNotificationService)
+                                                       .markRoomAsRead("user", "!other:matrix.meeds.tn", "$evt", null);
+    mockMvc.perform(post(REST_PATH + "/rooms/!other:matrix.meeds.tn/read").with(simpleUser()).param("eventId", "$evt"))
+           .andExpect(status().isForbidden());
+
+    mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").param("eventId", "$evt"))
+           .andExpect(status().isForbidden());
+  }
+
 }
