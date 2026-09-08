@@ -198,8 +198,13 @@ public class ChatNotificationService {
       return;
     }
     LOG.debug("Chat push for {} in {}: event {} buffered, deferred popup scheduled", userName, roomId, eventId);
-    pendingMessages.computeIfAbsent(pendingKey(userName, roomId), k -> new PendingRoomMessages())
-                   .add(pending);
+    // one atomic step: a concurrent read may evict the room buffer between a
+    // lookup and an add, which would orphan the message and lose its popup
+    pendingMessages.compute(pendingKey(userName, roomId), (key, buffer) -> {
+      PendingRoomMessages roomBuffer = buffer == null ? new PendingRoomMessages() : buffer;
+      roomBuffer.add(pending);
+      return roomBuffer;
+    });
     pwaNotificationService.scheduleDirectNotification(userName,
                                                       CHAT_NOTIFICATION_KIND,
                                                       DEFAULT_UNREAD_DELAY_SECONDS,
@@ -252,6 +257,8 @@ public class ChatNotificationService {
     }
     saveReadWatermark(userName, roomId, watermark);
     clearPendingMessages(userName, roomId, watermark);
+    // popups already displayed on other devices close from the receipt those
+    // devices receive through sync — never through a push showing nothing
   }
 
   private boolean isRoomMember(String userName, Room room) {
@@ -296,10 +303,12 @@ public class ChatNotificationService {
    * @param upToTimestamp read watermark (inclusive)
    */
   public void clearPendingMessages(String userName, String roomId, long upToTimestamp) {
-    PendingRoomMessages pending = pendingMessages.get(pendingKey(userName, roomId));
-    if (pending != null) {
+    // an emptied buffer leaves the map: read rooms cost nothing, and the next
+    // message starts a fresh batch on every device
+    pendingMessages.computeIfPresent(pendingKey(userName, roomId), (key, pending) -> {
       pending.removeUpTo(upToTimestamp);
-    }
+      return pending.isEmpty() ? null : pending;
+    });
   }
 
   private static String pendingKey(String userName, String roomId) {
@@ -369,6 +378,9 @@ public class ChatNotificationService {
     long readWatermark = getReadWatermark(userName, roomId);
     if (readWatermark > 0) {
       pending.removeUpTo(readWatermark);
+      if (pending.isEmpty()) {
+        pendingMessages.computeIfPresent(pendingKey(userName, roomId), (key, buffer) -> buffer.isEmpty() ? null : buffer);
+      }
     }
     PendingRoomMessages.Snapshot snapshot = pending.coverIfNotifiable(subscriptionId, messageTimestamp);
     if (snapshot == null) {
@@ -465,6 +477,10 @@ public class ChatNotificationService {
       messages.headMap(timestamp, true).clear();
     }
 
+    synchronized boolean isEmpty() {
+      return messages.isEmpty();
+    }
+
     synchronized Snapshot coverIfNotifiable(String subscriptionId, long timestamp) {
       long covered = coveredBySubscription.getOrDefault(subscriptionId, 0l);
       if (timestamp <= covered || !messages.containsKey(timestamp)) {
@@ -484,76 +500,6 @@ public class ChatNotificationService {
 
     record Snapshot(PendingMessage latest, int moreCount) {
     }
-  }
-
-  /**
-   * Creates a notification based on the received message
-   * 
-   * @param message the received message
-   * @param userName the user who will receive the notification
-   * @return a PWA push notification object
-   */
-  public PwaNotificationMessage createNotification(MatrixMessage message, String userName) {
-    if (message != null) {
-      PwaNotificationMessage pwaNotificationMessage = new PwaNotificationMessage();
-      Room room = matrixService.getById(message.getRoomId());
-
-      LocaleConfig localeConfig = pwaNotificationService.getLocaleConfig(userName);
-      String sender = message.getSender();
-
-      if (room != null) {
-        if (room.getSpaceId() == null) {
-          String senderUserName = room.getFirstParticipant().equals(userName) ? room.getSecondParticipant()
-                                                                              : room.getFirstParticipant();
-          Identity senderIdentity = identityManager.getOrCreateUserIdentity(senderUserName);
-          String senderFullName = senderIdentity != null ? senderIdentity.getProfile().getFullName() : sender;
-          pwaNotificationMessage.setTitle(senderFullName);
-          pwaNotificationMessage.setIcon(senderIdentity != null ? senderIdentity.getProfile().getAvatarUrl() : "");
-        } else {
-          Space space = spaceService.getSpaceById(room.getSpaceId());
-          Identity senderIdentity = matrixService.findSpaceMemberByMatrixId(sender, space);
-          String senderFullName = senderIdentity != null ? senderIdentity.getProfile().getFullName() : sender;
-          pwaNotificationMessage.setTitle(senderFullName + " "
-              + resourceBundleService.getSharedString(IN_KEY, localeConfig.getLocale()) + " " + space.getDisplayName());
-          pwaNotificationMessage.setIcon(space.getAvatarUrl());
-        }
-
-        pwaNotificationMessage.setBody(message.getMessageContent());
-        pwaNotificationMessage.setUrl(getMessageLink(message));
-        pwaNotificationService.setDefaultNotificationMessageProperties(pwaNotificationMessage,
-                                                                       message.getEventId(),
-                                                                       localeConfig);
-
-        return pwaNotificationMessage;
-      } else {
-        return null;
-      }
-    } else {
-      return null;
-    }
-  }
-
-  /**
-   * Creates a PWA notification based on the event details
-   *
-   * @param eventId the event Id
-   * @param roomId the room ID
-   * @param userName the user who received the notification
-   * @param lastMessageTimeStamp the timestamp of the last message
-   * @param token the authorization token
-   * @return notification object
-   */
-  public PwaNotificationMessage createNotification(String eventId,
-                                                   String roomId,
-                                                   String userName,
-                                                   long lastMessageTimeStamp,
-                                                   String token) {
-    MatrixMessage message = matrixService.getRoomEvent(eventId, roomId, token);
-    // Do not create a notification is the message is before the last message
-    if (message == null || lastMessageTimeStamp >= message.getTimeStamp()) {
-      return null;
-    }
-    return createNotification(message, userName);
   }
 
   private boolean isMentioned(MatrixMessage message, String userName) {

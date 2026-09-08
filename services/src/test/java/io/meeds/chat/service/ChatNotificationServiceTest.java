@@ -269,65 +269,6 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
   }
 
   @Test
-  void createNotification() throws Exception {
-    lenient().when(userStateModel.getStatus()).thenReturn("available");
-    lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
-    String eventId = "eventIDOnMatrix";
-    Space space = getSpaceInstance(1);
-    String roomId = matrixService.getRoomBySpace(space).getRoomId();
-    String userName = "demo";
-    Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
-    String userIdOnMatrix = matrixService.saveUserAccount(demoIdentity, true);
-
-    MatrixMessage matrixMessage = new MatrixMessage(eventId,
-                                                    roomId,
-                                                    "m.room.message",
-                                                    "This is a chat message",
-                                                    "m.text",
-                                                    userIdOnMatrix,
-                                                    new ArrayList<>(),
-                                                    123456789);
-    when(matrixHttpClient.getEventById(eventId, matrixRoomId, accessToken)).thenReturn(matrixMessage);
-    LocaleConfig localeConfig = new LocaleConfigImpl();
-    localeConfig.setLocale(Locale.ENGLISH);
-    localeConfig.setOrientation(Orientation.LT);
-    PwaNotificationMessage pwaNotificationMessage = chatNotificationService.createNotification(eventId,
-                                                                                               matrixRoomId,
-                                                                                               userName,
-                                                                                               0,
-                                                                                               accessToken);
-    assertNotNull(pwaNotificationMessage);
-    assertEquals("Demo exo in my space 1", pwaNotificationMessage.getTitle());
-    assertEquals("This is a chat message", pwaNotificationMessage.getBody());
-
-    Room oneToOneRoom = new Room();
-    oneToOneRoom.setRoomId("!oneToOneRoom:matrix.meeds.tn");
-    oneToOneRoom.setFirstParticipant("demo");
-    oneToOneRoom.setSecondParticipant("tom");
-    oneToOneRoom = matrixService.createDirectMessagingRoom(oneToOneRoom);
-    Identity tomIdentity = identityManager.getOrCreateUserIdentity("tom");
-    matrixMessage = new MatrixMessage(eventId,
-                                      oneToOneRoom.getRoomId(),
-                                      "m.room.message",
-                                      "This is a private chat message",
-                                      "m.text",
-                                      userIdOnMatrix,
-                                      new ArrayList<>(),
-                                      123456789);
-    when(matrixHttpClient.getEventById(eventId, oneToOneRoom.getRoomId(), accessToken)).thenReturn(matrixMessage);
-
-    pwaNotificationMessage = chatNotificationService.createNotification(eventId,
-                                                                        oneToOneRoom.getRoomId(),
-                                                                        userName,
-                                                                        0,
-                                                                        accessToken);
-    assertNotNull(pwaNotificationMessage);
-    assertNotNull(pwaNotificationMessage.getIcon());
-    assertEquals(tomIdentity.getProfile().getFullName(), pwaNotificationMessage.getTitle());
-    assertEquals("This is a private chat message", pwaNotificationMessage.getBody());
-  }
-
-  @Test
   void onMatrixPushReceivedDispatchesMention() throws Exception {
     lenient().when(userStateModel.getStatus()).thenReturn("available");
     lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
@@ -389,6 +330,9 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     localeConfig.setOrientation(Orientation.LT);
     lenient().when(mockedPwaNotificationService.getLocaleConfig(anyString())).thenReturn(localeConfig);
 
+    // the buffer is service state shared by the tests of this class: start clean
+    ((java.util.Map<?, ?>) ReflectionTestUtils.getField(chatNotificationService, "pendingMessages")).clear();
+
     // tom (manager) writes, demo (member) reads; john is not a member
     Identity tomIdentity = identityManager.getOrCreateUserIdentity("tom");
     String senderIdOnMatrix = matrixService.saveUserAccount(tomIdentity, true);
@@ -427,6 +371,11 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
                                eq(ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId),
                                any());
     assertNull(builders.getValue().build("deviceB"));
+    // no push follows a read: a popup on another device closes from the receipt
+    // that device gets through sync (a push showing nothing is a silent push)
+    // the emptied room buffer leaves the map
+    assertFalse(((java.util.Map<?, ?>) ReflectionTestUtils.getField(chatNotificationService, "pendingMessages")).containsKey("demo|"
+        + roomId));
 
     // the durable watermark alone cancels a fire (cluster / restart): a fresh
     // buffer for the room, watermark stored past the message
