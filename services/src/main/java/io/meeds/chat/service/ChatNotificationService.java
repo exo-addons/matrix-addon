@@ -24,6 +24,7 @@ import io.meeds.chat.model.Room;
 import io.meeds.portal.permlink.model.PermanentLinkObject;
 import io.meeds.portal.permlink.service.PermanentLinkService;
 import io.meeds.pwa.model.PwaDirectNotificationBuilder;
+import io.meeds.pwa.model.PwaNotificationAction;
 import io.meeds.pwa.model.PwaNotificationMessage;
 import io.meeds.pwa.service.PwaNotificationService;
 import io.meeds.social.space.plugin.SpacePermanentLinkPlugin;
@@ -35,6 +36,7 @@ import org.exoplatform.commons.api.notification.model.UserSetting;
 import org.exoplatform.commons.api.notification.service.setting.UserSettingService;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
@@ -116,6 +118,12 @@ public class ChatNotificationService {
 
   public static final String        MORE_MESSAGES_KEY            = "matrix.notification.moreMessages";
 
+  public static final String        MARK_READ_ACTION             = "markRead";
+
+  public static final String        MARK_READ_LABEL_KEY          = "pwa.notification.action.markAsRead";
+
+  public static final String        READ_WATERMARK_KEY_PREFIX    = "readWatermark:";
+
   private static final int          POPUP_BODY_MAX_LENGTH        = 150;
 
   private static final int          MAX_PENDING_PER_ROOM         = 100;
@@ -123,7 +131,8 @@ public class ChatNotificationService {
   private static final Map<String, String> DEFAULT_LABELS        =
                                                           Map.of(SENDS_YOU_A_CHAT_KEY, "{0} sends you a chat",
                                                                  MORE_MESSAGES_KEY, "And {0} more messages",
-                                                                   IN_KEY, "in");
+                                                                   IN_KEY, "in",
+                                                                   MARK_READ_LABEL_KEY, "Mark as read");
 
   /**
    * Unread chat messages already handed to the push scheduler, per
@@ -199,6 +208,76 @@ public class ChatNotificationService {
                                                           reopenRoomPopup(userName, roomId, subscriptionId, popup);
                                                         }
                                                       });
+  }
+
+  /**
+   * Marks a room as read for a user up to an event — the server-side read
+   * anchor: (1) the {@code m.read} receipt is posted with the user's own Matrix
+   * identity so every client converges through sync, (2) the read watermark is
+   * recorded durably, (3) the pending popups covered by it are discarded.
+   * Idempotent; the watermark only moves forward.
+   *
+   * @param userName the platform user
+   * @param roomId the Matrix room id
+   * @param eventId the event read up to (high-water mark)
+   * @param readTimestamp the timestamp of that event when known, else now
+   * @throws ObjectNotFoundException when the room is unknown
+   * @throws IllegalAccessException when the user is not a member of the room
+   */
+  public void markRoomAsRead(String userName, String roomId, String eventId, Long readTimestamp) throws ObjectNotFoundException,
+                                                                                                 IllegalAccessException {
+    if (StringUtils.isAnyBlank(userName, roomId, eventId)) {
+      throw new IllegalArgumentException("matrix.markRoomAsRead.invalidParameters");
+    }
+    Room room = matrixService.getById(roomId);
+    if (room == null) {
+      throw new ObjectNotFoundException("Room " + roomId + " not found");
+    }
+    if (!isRoomMember(userName, room)) {
+      throw new IllegalAccessException("User " + userName + " is not a member of room " + roomId);
+    }
+    // a client-supplied timestamp never moves the watermark past "now": a
+    // future value would silence the room for good
+    long now = System.currentTimeMillis();
+    long watermark = readTimestamp == null || readTimestamp <= 0 ? now : Math.min(readTimestamp, now);
+    if (!matrixService.markRoomAsRead(userName, room.getRoomId(), eventId)) {
+      // the receipt is the read anchor: without it nothing is marked read
+      throw new IllegalStateException("matrix.markRoomAsRead.receiptNotPosted");
+    }
+    saveReadWatermark(userName, roomId, watermark);
+    clearPendingMessages(userName, roomId, watermark);
+  }
+
+  private boolean isRoomMember(String userName, Room room) {
+    if (room.getSpaceId() != null) {
+      Space space = spaceService.getSpaceById(room.getSpaceId());
+      return space != null && spaceService.isMember(space, userName);
+    }
+    return StringUtils.equals(userName, room.getFirstParticipant()) || StringUtils.equals(userName, room.getSecondParticipant());
+  }
+
+  private long getReadWatermark(String userName, String roomId) {
+    SettingValue<?> value = settingService.get(Context.USER.id(userName),
+                                               USER_CHAT_NOTIFICATION_SCOPE,
+                                               READ_WATERMARK_KEY_PREFIX + roomId);
+    if (value == null || value.getValue() == null) {
+      return 0;
+    }
+    try {
+      return Long.parseLong(String.valueOf(value.getValue()));
+    } catch (NumberFormatException e) {
+      return 0;
+    }
+  }
+
+  private void saveReadWatermark(String userName, String roomId, long timestamp) {
+    // monotonic: a late or concurrent read never moves the watermark back
+    if (timestamp > getReadWatermark(userName, roomId)) {
+      settingService.set(Context.USER.id(userName),
+                         USER_CHAT_NOTIFICATION_SCOPE,
+                         READ_WATERMARK_KEY_PREFIX + roomId,
+                         SettingValue.create(String.valueOf(timestamp)));
+    }
   }
 
   /**
@@ -279,6 +358,12 @@ public class ChatNotificationService {
       LOG.debug("Chat popup for {} in {} on device {}: no pending messages, cancelled", userName, roomId, subscriptionId);
       return null;
     }
+    // the durable read watermark is the fire-time guard's authoritative input
+    // (a read recorded on another node or before a restart is seen here)
+    long readWatermark = getReadWatermark(userName, roomId);
+    if (readWatermark > 0) {
+      pending.removeUpTo(readWatermark);
+    }
     PendingRoomMessages.Snapshot snapshot = pending.coverIfNotifiable(subscriptionId, messageTimestamp);
     if (snapshot == null) {
       LOG.debug("Chat popup for {} in {} on device {}: read or already covered, cancelled", userName, roomId, subscriptionId);
@@ -301,9 +386,13 @@ public class ChatNotificationService {
       popup.setBody(body);
       popup.setIcon(latest.icon());
       popup.setUrl(latest.link());
+      // one popup per room; the tag is also the object the "mark as read" action
+      // token is scoped to (pwa hands it back as the trusted room id)
       popup.setTag(roomId);
       popup.setRenotify(true);
       popup.setLang(locale.toLanguageTag());
+      // quick action: shown where the OS supports notification actions
+      popup.setActions(List.of(new PwaNotificationAction(formatLabel(MARK_READ_LABEL_KEY, locale, ""), MARK_READ_ACTION)));
       popup.setData(Map.of("roomId", roomId,
                            "eventId", latest.eventId(),
                            "ts", String.valueOf(latest.timestamp())));
