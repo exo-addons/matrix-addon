@@ -1393,7 +1393,7 @@ public class MatrixService {
       LOG.error("Matrix chat operation interrupted for user {}", userName, e);
       return fallback;
     } catch (Exception e) {
-      LOG.error("Matrix chat operation failed for user {}", userName, e);
+      LOG.warn("Matrix chat operation failed for user {}", userName, e);
       return fallback;
     }
   }
