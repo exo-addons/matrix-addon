@@ -19,3 +19,4 @@
 
 import './initComponents.js';
 import './extensions.js';
+import './js/pushClickAction.js';

@@ -21,7 +21,7 @@ import {chatConstants} from '../../matrix/js/Constants.js';
 import {chatRootOptions} from '../../matrix/js/chatRootOptions.js';
 
 /** Id of the container the chat portlet mounts into in the topbar. */
-const TOPBAR_APP_ID = 'matrixChatButton';
+export const TOPBAR_APP_ID = 'matrixChatButton';
 
 /** Id of the app mounted here when the topbar one is absent. */
 const QUICK_ACTION_APP_ID = 'chat-quick-actions';
@@ -44,6 +44,16 @@ let mountingPromise = null;
 let chatReady = false;
 
 document.addEventListener(chatConstants.CHAT_READY, () => chatReady = true);
+
+/**
+ * Whether a chat instance has announced it is listening: `ensureChatApp()`
+ * resolves on timeout too, so a caller that needs a listener asks this.
+ *
+ * @returns {boolean} true once a chat instance dispatched CHAT_READY
+ */
+export function isChatReady() {
+  return chatReady;
+}
 
 /**
  * Ensures one chat application is present on the page *and listening*,
