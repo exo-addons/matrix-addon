@@ -411,8 +411,7 @@ async function handleReadReceiptEvent(event, roomId) {
         // the room was read here or on another device: the popups this device
         // still displays for messages up to that point are stale
         closeRoomPopups(roomId, exists.origin_server_ts ?? newTimestamp);
-        const isLast = isLastMessageInRoom(eventId, roomId);
-        if (isLast) {
+        if (isRoomReadUpTo(eventId, exists.origin_server_ts, roomId)) {
           document.dispatchEvent(new CustomEvent('matrix-room-mark-full-read', {
             detail: { roomId }
           })
@@ -447,11 +446,31 @@ export async function loadLastReadReceipts(roomId) {
   return await dbStorage.getValue(dbSettings, receiptsStore, storeKey) || {};
 }
 
-function isLastMessageInRoom(eventId, roomId) {
-  if (!lastMessagesByRoom) {
+/**
+ * Whether a read receipt of the current user leaves nothing unread in a room:
+ * the read event is the room's last message, or is after it, or that last
+ * message is the user's own new message — sending it proved the room was read
+ * (an edit of an old message of theirs proves nothing). The
+ * receipt of a read done before a reply reaches this page after the reply (the
+ * timeline of a sync response is processed before its receipts), so matching
+ * the last event alone would leave the room unread.
+ *
+ * @param {string} eventId event the receipt points at
+ * @param {number} readTimestamp origin_server_ts of that event, when known
+ * @param {string} roomId Matrix room id
+ * @returns {boolean} true when the room counts as fully read
+ */
+function isRoomReadUpTo(eventId, readTimestamp, roomId) {
+  const lastMessage = lastMessagesByRoom?.get(roomId);
+  if (!lastMessage) {
     return false;
   }
-  return lastMessagesByRoom.get(roomId)?.event_id === eventId;
+  // an edited last message is stored under the original's id: its receipt
+  // points at the edit event
+  return lastMessage.event_id === eventId
+    || lastMessage.replacementEventId === eventId
+    || (lastMessage.sender === matrixUserId && !lastMessage.edited)
+    || (!!readTimestamp && !!lastMessage.origin_server_ts && readTimestamp > lastMessage.origin_server_ts);
 }
 
 export function toRoomObject(rooms, currentMemberId) {
