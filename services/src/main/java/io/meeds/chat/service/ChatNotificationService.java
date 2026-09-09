@@ -363,8 +363,41 @@ public class ChatNotificationService {
                               roomName,
                               spaceRoom,
                               StringUtils.abbreviate(message.getMessageContent(), POPUP_BODY_MAX_LENGTH),
-                              icon,
-                              getMessageLink(message));
+                              icon);
+  }
+
+  /**
+   * Where a popup click lands when no app page is open: the page the user
+   * lands on when opening the app (their home page, else the default site
+   * node — what a bare /portal redirects to). The room is not opened there,
+   * which is why the url carries no {@code roomId}: with the app closed the
+   * click opens the app, opening the room is the in-page client action. A
+   * home that is not an absolute path of this origin (an external link page,
+   * a fragment) is replaced by the default site, since the service worker
+   * prefixes the url with the origin. {@code message} carries the notified
+   * event for a future scroll-to-message; no client reads it today, and such
+   * a client would need the room back in the url to fetch the event.
+   */
+  private String getHomeLink(String userName, String eventId) {
+    String home = null;
+    try {
+      home = portalConfigService.getDefaultPath(userName);
+    } catch (Exception e) {
+      LOG.warn("Default path of {} unavailable ({}), the chat popup opens the default site instead",
+               userName,
+               e.getMessage());
+    }
+    if (!isPortalPagePath(home)) {
+      home = "/portal/" + portalConfigService.getMetaPortal();
+    }
+    return home + (home.contains("?") ? "&" : "?") + "message=" + eventId;
+  }
+
+  private static boolean isPortalPagePath(String path) {
+    return StringUtils.isNotBlank(path)
+           && path.startsWith("/")
+           && !path.startsWith("//")
+           && !path.contains("#");
   }
 
   private PwaNotificationMessage buildRoomPopup(String userName, String roomId, String subscriptionId, long messageTimestamp) {
@@ -403,7 +436,7 @@ public class ChatNotificationService {
       popup.setTitle(title);
       popup.setBody(body);
       popup.setIcon(latest.icon());
-      popup.setUrl(latest.link());
+      popup.setUrl(getHomeLink(userName, latest.eventId()));
       // one popup per room; the tag is also the object the "mark as read" action
       // token is scoped to (pwa hands it back as the trusted room id)
       popup.setTag(roomId);
@@ -452,8 +485,7 @@ public class ChatNotificationService {
                                 String roomName,
                                 boolean spaceRoom,
                                 String body,
-                                String icon,
-                                String link) {
+                                String icon) {
   }
 
   private static final class PendingRoomMessages {

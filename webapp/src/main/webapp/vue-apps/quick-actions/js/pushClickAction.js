@@ -64,9 +64,10 @@ document.addEventListener(chatConstants.ACTION_OPEN_CHAT_ROOM_FROM_PUSH, event =
     });
 });
 
-// A page reached by a popup url carries ?roomId=: the chat button opens that
-// room when it mounts. Without the topbar one (unpinned by an administrator),
-// mounting the hidden instance is enough — it reads the url the same way
+// A page reached by a ?roomId= link (a mention web notification, a deep link)
+// opens that room when the chat button mounts. Without the topbar one (unpinned
+// by an administrator), mounting the hidden instance is enough — it reads the
+// url the same way
 if (new URLSearchParams(window.location.search).get('roomId')
     && !document.querySelector(`#${TOPBAR_APP_ID}`)
     && typeof meedsChat !== 'undefined' && meedsChat.chatEnabled) {

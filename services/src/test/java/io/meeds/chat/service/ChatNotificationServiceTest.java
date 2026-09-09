@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import io.meeds.chat.MatrixBaseTest;
 import io.meeds.chat.model.MatrixMessage;
 import io.meeds.chat.model.Room;
+import io.meeds.portal.permlink.service.PermanentLinkService;
 import io.meeds.pwa.model.PwaDirectNotificationBuilder;
 import io.meeds.pwa.model.PwaNotificationMessage;
 import io.meeds.pwa.service.PwaNotificationService;
@@ -24,6 +25,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.portal.config.UserPortalConfigService;
 import org.exoplatform.services.resources.LocaleConfig;
 import org.exoplatform.services.resources.Orientation;
 import org.exoplatform.services.resources.ResourceBundleService;
@@ -68,6 +70,12 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
   @Autowired
   WebNotificationService             webNotificationService;
 
+  @Autowired
+  UserPortalConfigService            portalConfigService;
+
+  @Autowired
+  PermanentLinkService               permanentLinkService;
+
   @Mock
   private UserStateService           userStateService;
 
@@ -106,6 +114,8 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
   @Override
   public void tearDown() {
     ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", pwaNotificationService);
+    ReflectionTestUtils.setField(chatNotificationService, "portalConfigService", portalConfigService);
+    ReflectionTestUtils.setField(chatNotificationService, "permanentLinkService", permanentLinkService);
     super.tearDown();
     if (commonsUtils != null) {
       commonsUtils.close();
@@ -179,6 +189,15 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
     lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
     ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
+    // the popup url is the recipient's landing page, never the message permalink:
+    // give both a distinguishable answer so the assertion below is a real pin
+    UserPortalConfigService mockedPortalConfigService = mock(UserPortalConfigService.class);
+    lenient().when(mockedPortalConfigService.getDefaultPath("john")).thenReturn("/portal/dw/stream");
+    lenient().when(mockedPortalConfigService.getMetaPortal()).thenReturn("dw");
+    ReflectionTestUtils.setField(chatNotificationService, "portalConfigService", mockedPortalConfigService);
+    PermanentLinkService mockedPermanentLinkService = mock(PermanentLinkService.class);
+    lenient().when(mockedPermanentLinkService.getLink(any())).thenReturn("/portal/g/:spaces:space4/space4/");
+    ReflectionTestUtils.setField(chatNotificationService, "permanentLinkService", mockedPermanentLinkService);
     LocaleConfigImpl localeConfig = new LocaleConfigImpl();
     localeConfig.setLocale(Locale.ENGLISH);
     localeConfig.setOrientation(Orientation.LT);
@@ -227,6 +246,10 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     assertTrue(popup.getBody().startsWith("second message"));
     assertTrue(popup.getBody().contains("1 more"));
     assertEquals("evt2", popup.getData().get("eventId"));
+    // with no app page open, the click lands on the recipient's landing page,
+    // without opening the room — not on the space permalink, which is not resolved
+    assertEquals("/portal/dw/stream?message=evt2", popup.getUrl());
+    verify(mockedPermanentLinkService, never()).getLink(any());
     assertEquals(roomId, popup.getData().get("roomId"));
     // click opens the room in the already-open page instead of reloading it
     assertEquals(ChatNotificationService.OPEN_ROOM_CLIENT_ACTION,
@@ -249,6 +272,23 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
                                                                    .thenReturn(localeConfig);
     assertThrows(IllegalStateException.class, () -> builders.getAllValues().get(0).build("device3"));
     assertNotNull(builders.getAllValues().get(0).build("device3"));
+
+    // the landing page is resolved at fire time: a failed lookup falls back to
+    // the default site, a home carrying a query keeps it, and a home that is not
+    // a page of this portal (external link page, fragment, protocol-relative)
+    // is replaced by the default site
+    when(mockedPortalConfigService.getDefaultPath("john")).thenThrow(new IllegalStateException("no navigation"))
+                                                          .thenReturn("/portal/dw/stream?tab=1")
+                                                          .thenReturn("https://example.org/home")
+                                                          .thenReturn("/portal/dw/stream#top")
+                                                          .thenReturn("//example.org/home");
+    String defaultSiteUrl = "/portal/dw?message=evt2";
+    assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device4").getUrl());
+    assertEquals("/portal/dw/stream?tab=1&message=evt2",
+                 builders.getAllValues().get(0).build("device5").getUrl());
+    assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device6").getUrl());
+    assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device7").getUrl());
+    assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device8").getUrl());
 
     // a read watermark cancels the pending fires it covers
     when(matrixHttpClient.getEventById("evt3", roomId, accessToken))
