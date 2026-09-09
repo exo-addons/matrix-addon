@@ -593,12 +593,7 @@ export default {
         return;
       }
 
-      const existingRoom = this.rooms[roomIndex];
       const isNewMessageFromOtherUser = matrixUserId !== message.sender;
-
-      const newUnreadCount = isNewMessageFromOtherUser
-        ? existingRoom.unreadMessages + 1
-        : existingRoom.unreadMessages;
 
       const messageText = message.content.format === 'org.matrix.custom.html'
         ? this.$matrixService.formatMentionsInRoomList(message.content.formatted_body)
@@ -607,8 +602,21 @@ export default {
       const lastMessageContent = await this.buildLastMessageContent(
         message.sender,
         messageText,
-        existingRoom
+        this.rooms[roomIndex]
       );
+      // re-read after the await: a receipt or a reaction may have replaced or
+      // updated the room object meanwhile
+      const existingRoom = this.getLocalRoomById(roomId);
+      if (!existingRoom) {
+        return;
+      }
+
+      // a new message of mine proves I read the room, whichever device sent
+      // it: nothing before it stays unread here (an edit proves nothing)
+      const readByMyMessage = !isNewMessageFromOtherUser && !message.edited;
+      const newUnreadCount = isNewMessageFromOtherUser
+        ? existingRoom.unreadMessages + 1
+        : readByMyMessage ? 0 : existingRoom.unreadMessages;
 
       const updatedRoom = {
         ...existingRoom,
@@ -625,8 +633,12 @@ export default {
       updatedRooms.unshift(updatedRoom);
       this.rooms = updatedRooms;
 
-      if (isNewMessageFromOtherUser && !updatedRoom.muted) {
-        this.updateTotalUnread(1);
+      if (!updatedRoom.muted) {
+        if (isNewMessageFromOtherUser) {
+          this.updateTotalUnread(1);
+        } else if (readByMyMessage && existingRoom.unreadMessages > 0) {
+          this.updateTotalUnread(existingRoom.unreadMessages, true);
+        }
       }
     },
     scheduleSeenEventsCleanup() {
