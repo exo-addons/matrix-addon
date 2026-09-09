@@ -36,7 +36,6 @@ import org.exoplatform.social.notification.LinkProviderUtils;
 import org.exoplatform.social.notification.Utils;
 import org.exoplatform.social.notification.plugin.SocialNotificationUtils;
 
-import java.io.Writer;
 import java.util.Calendar;
 import java.util.Locale;
 
@@ -103,10 +102,5 @@ public class MatrixTemplateBuilder extends AbstractTemplateBuilder {
     messageInfo.body(TemplateUtils.processGroovy(templateContext));
     notificationContext.setException(templateContext.getException());
     return messageInfo.end();
-  }
-
-  @Override
-  protected boolean makeDigest(NotificationContext notificationContext, Writer writer) {
-    return false;
   }
 }
