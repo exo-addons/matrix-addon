@@ -54,11 +54,15 @@ import org.exoplatform.social.core.space.model.Space;
 import org.exoplatform.social.core.space.spi.SpaceService;
 import org.exoplatform.ws.frameworks.json.impl.JsonException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static io.meeds.chat.service.utils.MatrixConstants.*;
 import static io.meeds.pwa.service.PwaNotificationService.*;
@@ -106,9 +110,9 @@ public class ChatNotificationService {
 
   public static final String        MUTED_ROOMS                  = "mutedRooms";
 
-    /**
-   * Default delay a message must stay unread before a device pops it, until
-   * the per-device setting story provides a per-subscription value.
+  /**
+   * Default delay a message must stay unread before a device pops it, applied
+   * when the device defines no delay of its own.
    */
   public static final long          DEFAULT_UNREAD_DELAY_SECONDS = 300;
 
@@ -130,17 +134,35 @@ public class ChatNotificationService {
 
   private static final String       MATRIX_ROOM_ID_PARAM         = "roomId";
 
+  private static final String       MATRIX_MESSAGE_PARAM         = "message";
+
   public static final String        READ_WATERMARK_KEY_PREFIX    = "readWatermark:";
 
-  private static final int          POPUP_BODY_MAX_LENGTH        = 150;
-
   private static final int          MAX_PENDING_PER_ROOM         = 100;
+
+  /**
+   * A room buffer whose newest message is older than this can no longer fire:
+   * the longest delay a device may set is 24 hours. Without it a room nobody
+   * reads again keeps its messages for the lifetime of the node.
+   */
+  private static final long         PENDING_RETENTION_MS         = 25l * 60 * 60 * 1000;
+
+  private static final long         PENDING_SWEEP_INTERVAL_MS    = 60l * 60 * 1000;
 
   private static final Map<String, String> DEFAULT_LABELS        =
                                                           Map.of(SENDS_YOU_A_CHAT_KEY, "{0} sends you a chat",
                                                                  MORE_MESSAGES_KEY, "And {0} more messages",
-                                                                   IN_KEY, "in",
-                                                                   MARK_READ_LABEL_KEY, "Mark as read");
+                                                                 IN_KEY, "in",
+                                                                 MARK_READ_LABEL_KEY, "Mark as read");
+
+  /**
+   * Length of the message preview a popup carries, from the platform-wide push
+   * body setting: the admin lever over what shows on a lock screen.
+   */
+  @Value("${pwa.notifications.maxBodyLength:75}")
+  private int                       popupBodyMaxLength;
+
+  private final AtomicLong          lastPendingSweep             = new AtomicLong();
 
   /**
    * Unread chat messages already handed to the push scheduler, per
@@ -166,6 +188,7 @@ public class ChatNotificationService {
    *          room events
    */
   public void onMatrixPushReceived(String eventId, String roomId, String userName, String pushKey) {
+    sweepStalePendingMessages();
     Room room = matrixService.getById(roomId);
     if (room == null) {
       LOG.debug("Chat push for {} in {}: unknown room, ignored", userName, roomId);
@@ -249,10 +272,7 @@ public class ChatNotificationService {
     if (!isRoomMember(userName, room)) {
       throw new IllegalAccessException("User " + userName + " is not a member of room " + roomId);
     }
-    // a client-supplied timestamp never moves the watermark past "now": a
-    // future value would silence the room for good
-    long now = System.currentTimeMillis();
-    long watermark = readTimestamp == null || readTimestamp <= 0 ? now : Math.min(readTimestamp, now);
+    long watermark = resolveReadWatermark(userName, room, eventId, readTimestamp);
     if (!matrixService.markRoomAsRead(userName, room.getRoomId(), eventId)) {
       // the receipt is the read anchor: without it nothing is marked read
       throw new IllegalStateException("matrix.markRoomAsRead.receiptNotPosted");
@@ -261,6 +281,43 @@ public class ChatNotificationService {
     clearPendingMessages(userName, roomId, watermark);
     // popups already displayed on other devices close from the receipt those
     // devices receive through sync — never through a push showing nothing
+  }
+
+  /**
+   * Discards the pending popups of a room up to a timestamp: their deferred
+   * sends are cancelled at fire time. Called when the room is read up to that
+   * point (read-anchor story).
+   *
+   * @param userName the recipient platform username
+   * @param roomId the Matrix room ID
+   * @param upToTimestamp read watermark (inclusive)
+   */
+  public void clearPendingMessages(String userName, String roomId, long upToTimestamp) {
+    // an emptied buffer leaves the map: read rooms cost nothing, and the next
+    // message starts a fresh batch on every device
+    pendingMessages.computeIfPresent(pendingKey(userName, roomId), (key, pending) -> {
+      pending.removeUpTo(upToTimestamp);
+      return pending.isEmpty() ? null : pending;
+    });
+  }
+
+  /**
+   * The watermark is compared against the {@code origin_server_ts} of buffered
+   * messages, so it has to be on the Matrix server's clock: the event's own
+   * timestamp, read back from the server. A caller's timestamp is only a
+   * fallback, and never moves the watermark past "now" — a future value would
+   * silence the room for good.
+   */
+  private long resolveReadWatermark(String userName, Room room, String eventId, Long readTimestamp) {
+    MatrixMessage event = matrixService.getRoomEventAsUser(userName, room.getRoomId(), eventId);
+    if (event != null && event.getTimeStamp() > 0) {
+      return event.getTimeStamp();
+    }
+    LOG.debug("Event {} of room {} could not be read back: the read watermark falls back to the caller's timestamp",
+              eventId,
+              room.getRoomId());
+    long now = System.currentTimeMillis();
+    return readTimestamp == null || readTimestamp <= 0 ? now : Math.min(readTimestamp, now);
   }
 
   private boolean isRoomMember(String userName, Room room) {
@@ -295,24 +352,6 @@ public class ChatNotificationService {
     }
   }
 
-  /**
-   * Discards the pending popups of a room up to a timestamp: their deferred
-   * sends are cancelled at fire time. Called when the room is read up to that
-   * point (read-anchor story).
-   *
-   * @param userName the recipient platform username
-   * @param roomId the Matrix room ID
-   * @param upToTimestamp read watermark (inclusive)
-   */
-  public void clearPendingMessages(String userName, String roomId, long upToTimestamp) {
-    // an emptied buffer leaves the map: read rooms cost nothing, and the next
-    // message starts a fresh batch on every device
-    pendingMessages.computeIfPresent(pendingKey(userName, roomId), (key, pending) -> {
-      pending.removeUpTo(upToTimestamp);
-      return pending.isEmpty() ? null : pending;
-    });
-  }
-
   private static String pendingKey(String userName, String roomId) {
     return userName + "|" + roomId;
   }
@@ -325,10 +364,10 @@ public class ChatNotificationService {
     try {
       accessToken = matrixService.getAccessToken(pushKey);
     } catch (JsonException | IOException e) {
-      LOG.error("Could not get Matrix Access token for the administrator account !", e);
+      LOG.error("Could not get the Matrix access token of the notified device from its pushkey", e);
     } catch (InterruptedException interruptedException) {
       Thread.currentThread().interrupt();
-      LOG.error("Could not get Matrix Access token for the administrator account !", interruptedException);
+      LOG.error("Could not get the Matrix access token of the notified device from its pushkey", interruptedException);
     }
     if (StringUtils.isBlank(accessToken)) {
       return null;
@@ -364,7 +403,7 @@ public class ChatNotificationService {
                               senderFullName,
                               roomName,
                               spaceRoom,
-                              StringUtils.abbreviate(message.getMessageContent(), POPUP_BODY_MAX_LENGTH),
+                              StringUtils.abbreviate(message.getMessageContent(), popupBodyMaxLength),
                               icon);
   }
 
@@ -387,8 +426,19 @@ public class ChatNotificationService {
     return isPortalPagePath(home) ? home : "/portal/" + portalConfigService.getMetaPortal();
   }
 
-  private static String withQuery(String path, String query) {
-    return path + (path.contains("?") ? "&" : "?") + query;
+  private static String withQuery(String path, String... parameters) {
+    StringBuilder url = new StringBuilder(path);
+    char separator = path.contains("?") ? '&' : '?';
+    for (int i = 0; i < parameters.length; i += 2) {
+      // a Matrix id is not query-safe: an event id of a recent room version
+      // carries '+' and '=', which a reader decodes as a space and a separator
+      url.append(separator)
+         .append(parameters[i])
+         .append('=')
+         .append(URLEncoder.encode(parameters[i + 1], StandardCharsets.UTF_8));
+      separator = '&';
+    }
+    return url.toString();
   }
 
   private static boolean isPortalPagePath(String path) {
@@ -454,7 +504,7 @@ public class ChatNotificationService {
       // with no app page open, the click only opens the app on the user's
       // landing page: the room stays closed. {@code message} carries the
       // notified event for a future scroll-to-message; no client reads it yet
-      popup.setUrl(withQuery(home, "message=" + latest.eventId()));
+      popup.setUrl(withQuery(home, MATRIX_MESSAGE_PARAM, latest.eventId()));
       // one popup per room; the tag is also the object the "mark as read" action
       // token is scoped to (pwa hands it back as the trusted room id)
       popup.setTag(roomId);
@@ -471,7 +521,7 @@ public class ChatNotificationService {
                            // navigated to it instead — a page kept in the
                            // background is often frozen and answers nothing
                            PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA,
-                           withQuery(home, MATRIX_ROOM_ID_PARAM + "=" + roomId + "&message=" + latest.eventId())));
+                           withQuery(home, MATRIX_ROOM_ID_PARAM, roomId, MATRIX_MESSAGE_PARAM, latest.eventId())));
       return popup;
     } catch (Exception e) {
       // a failed build must not consume the device's popup: re-arm and rethrow
@@ -512,7 +562,7 @@ public class ChatNotificationService {
 
   private static final class PendingRoomMessages {
 
-    private final NavigableMap<Long, PendingMessage> messages               = new TreeMap<>();
+    private final NavigableMap<PendingKey, PendingMessage> messages         = new TreeMap<>();
 
     /**
      * Per-device "popped up to" watermark: each subscribed device shows the
@@ -521,27 +571,35 @@ public class ChatNotificationService {
     private final Map<String, Long>                  coveredBySubscription  = new HashMap<>();
 
     synchronized void add(PendingMessage message) {
-      messages.put(message.timestamp(), message);
+      messages.put(new PendingKey(message.timestamp(), message.eventId()), message);
       while (messages.size() > MAX_PENDING_PER_ROOM) {
         messages.pollFirstEntry();
       }
     }
 
     synchronized void removeUpTo(long timestamp) {
-      messages.headMap(timestamp, true).clear();
+      messages.headMap(PendingKey.upperBound(timestamp), true).clear();
     }
 
     synchronized boolean isEmpty() {
       return messages.isEmpty();
     }
 
+    synchronized boolean isStaleAt(long timestamp) {
+      Map.Entry<PendingKey, PendingMessage> last = messages.lastEntry();
+      return last == null || last.getKey().timestamp() < timestamp;
+    }
+
     synchronized Snapshot coverIfNotifiable(String subscriptionId, long timestamp) {
       long covered = coveredBySubscription.getOrDefault(subscriptionId, 0l);
-      if (timestamp <= covered || !messages.containsKey(timestamp)) {
+      if (timestamp <= covered || messages.subMap(PendingKey.lowerBound(timestamp),
+                                                  true,
+                                                  PendingKey.upperBound(timestamp),
+                                                  true).isEmpty()) {
         return null;
       }
-      Map.Entry<Long, PendingMessage> last = messages.lastEntry();
-      coveredBySubscription.put(subscriptionId, last.getKey());
+      Map.Entry<PendingKey, PendingMessage> last = messages.lastEntry();
+      coveredBySubscription.put(subscriptionId, last.getKey().timestamp());
       return new Snapshot(last.getValue(), messages.size() - 1);
     }
 
@@ -554,6 +612,47 @@ public class ChatNotificationService {
 
     record Snapshot(PendingMessage latest, int moreCount) {
     }
+
+    /**
+     * Messages are ordered by the server timestamp they are read up to, and
+     * the event id separates two of the same millisecond — keyed on the
+     * timestamp alone they would overwrite each other and one would vanish
+     * from the "and N more" count.
+     */
+    private record PendingKey(long timestamp, String eventId) implements Comparable<PendingKey> {
+
+      static PendingKey lowerBound(long timestamp) {
+        return new PendingKey(timestamp, "");
+      }
+
+      static PendingKey upperBound(long timestamp) {
+        return new PendingKey(timestamp, "\uffff");
+      }
+
+      @Override
+      public int compareTo(PendingKey other) {
+        int byTimestamp = Long.compare(timestamp, other.timestamp);
+        return byTimestamp == 0 ? StringUtils.compare(eventId, other.eventId) : byTimestamp;
+      }
+    }
+  }
+
+  /**
+   * Drops the room buffers whose newest message can no longer fire. Runs at
+   * most hourly, on the reception path, so a node that receives nothing keeps
+   * nothing to sweep. Each removal goes through {@code computeIfPresent} so it
+   * cannot race with a message being buffered for the same room.
+   */
+  private void sweepStalePendingMessages() {
+    long now = System.currentTimeMillis();
+    long last = lastPendingSweep.get();
+    if (now - last < PENDING_SWEEP_INTERVAL_MS || !lastPendingSweep.compareAndSet(last, now)) {
+      return;
+    }
+    long cutoff = now - PENDING_RETENTION_MS;
+    pendingMessages.keySet()
+                   .forEach(key -> pendingMessages.computeIfPresent(key,
+                                                                    (k, buffer) -> buffer.isStaleAt(cutoff) ? null : buffer));
   }
 
   private boolean isMentioned(MatrixMessage message, String userName) {
@@ -628,12 +727,14 @@ public class ChatNotificationService {
         return false;
       }
 
-      boolean isUserMentioned = false;
-      for (String mentionedMatrixId : message.getMentionedUsers()) {
-        mentionedMatrixId = "@" + mentionedMatrixId.substring(1).replace("@", "-");// In case the username is the user email
-        isUserMentioned = mentionedMatrixId.equals(matrixReceiverId);
+      for (String mentionedUser : message.getMentionedUsers()) {
+        // In case the username is the user email
+        String mentionedMatrixId = "@" + mentionedUser.substring(1).replace("@", "-");
+        if (mentionedMatrixId.equals(matrixReceiverId)) {
+          return true;
+        }
       }
-      return isUserMentioned;
+      return false;
     }
 
   public boolean isPrivateRoomMutedForUser(String userName, String roomId) {

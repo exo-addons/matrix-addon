@@ -1646,7 +1646,10 @@ public class MatrixHttpClient {
     }
     String fullRoomId = matrixRoomId.contains(":") ? matrixRoomId
                                                    : matrixRoomId + ":" + PropertyManager.getProperty(MATRIX_SERVER_NAME);
-    String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + ROOMS_API_PATH + fullRoomId + "/receipt/m.read/" + eventId;
+    // the event id is client-supplied and, depending on the room version, may
+    // carry ':', '/', '+' or '=' — it is a path segment, so it is encoded
+    String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + ROOMS_API_PATH + fullRoomId + "/receipt/m.read/"
+        + URLEncoder.encode(eventId, StandardCharsets.UTF_8);
     // the web client sends the same threaded receipt: its sync handler resets
     // the room badge only when thread_id is present
     String payload = new JSONObject().put("thread_id", "main").toString();

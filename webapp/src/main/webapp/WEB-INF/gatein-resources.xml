@@ -242,7 +242,6 @@
     <name>MatrixPWAUserSettings</name>
     <load-group>pwaUserSettingsGRP</load-group>
     <script>
-      <minify>false</minify>
       <path>/js/chatPwaSettings.bundle.js</path>
     </script>
     <depends>

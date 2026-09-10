@@ -1321,6 +1321,19 @@ public class MatrixService {
   }
 
   /**
+   * Reads one event back with the user's own Matrix identity, so an event of a
+   * room the administrator account cannot see (a direct message) resolves too.
+   *
+   * @param userName the platform user
+   * @param roomId the room (local or full id)
+   * @param eventId the event to read back
+   * @return the event, or null when it cannot be read
+   */
+  public MatrixMessage getRoomEventAsUser(String userName, String roomId, String eventId) {
+    return callAsUser(userName, null, accessToken -> matrixHttpClient.getEventById(eventId, roomId, accessToken));
+  }
+
+  /**
    * Marks a room as read for a user up to an event, with the user's own Matrix
    * identity (server-side read anchor): posts the {@code m.read} receipt so
    * every client of the user converges through Matrix sync.

@@ -53,6 +53,12 @@ import static io.meeds.chat.service.utils.MatrixConstants.MATRIX_ROOM_MEMBER;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+/*
+ * The push wire itself is never exercised here: PwaNotificationService is mocked
+ * at the seam, so the deferred send, the Web Push encryption and what a device
+ * displays are covered only by a manual run on the acceptance server. These
+ * tests pin the reception rules, the buffering and the payload handed to pwa.
+ */
 class ChatNotificationServiceTest extends MatrixBaseTest {
 
   @Autowired
@@ -180,6 +186,22 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     when(mockedPwaNotificationService.canReceiveDirectNotifications(eq("demo"), anyString())).thenReturn(false);
     chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
     verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(anyString(), anyString(), anyLong(), any());
+
+    // the recipient wrote the message: nothing is scheduled for its own author.
+    // The sender guard runs before the "can any device receive" one, so that
+    // stub stays unused here — which is the point
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(eq("demo"), anyString())).thenReturn(true);
+    String demoIdOnMatrix = matrixService.saveUserAccount(identityManager.getOrCreateUserIdentity("demo"), true);
+    when(matrixHttpClient.getEventById(eventId, roomId, accessToken)).thenReturn(new MatrixMessage(eventId,
+                                                                                                   roomId,
+                                                                                                   "m.room.message",
+                                                                                                   "my own message",
+                                                                                                   "m.text",
+                                                                                                   demoIdOnMatrix,
+                                                                                                   new ArrayList<>(),
+                                                                                                   123456791));
+    chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
+    verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(anyString(), anyString(), anyLong(), any());
   }
 
   @Test
@@ -246,11 +268,13 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     assertTrue(popup.getBody().startsWith("second message"));
     assertTrue(popup.getBody().contains("1 more"));
     assertEquals("evt2", popup.getData().get("eventId"));
+    // the room id is a Matrix id: query-encoded, so a reader gets it back intact
+    String encodedRoomId = roomId.replace("!", "%21").replace(":", "%3A");
     // with no app page open, the click lands on the recipient's landing page,
     // without opening the room — not on the space permalink, which is not resolved
     assertEquals("/portal/dw/stream?message=evt2", popup.getUrl());
     // an app page open but unable to act in place is navigated to the room
-    assertEquals("/portal/dw/stream?roomId=" + roomId + "&message=evt2",
+    assertEquals("/portal/dw/stream?roomId=" + encodedRoomId + "&message=evt2",
                  popup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
     verify(mockedPermanentLinkService, never()).getLink(any());
     assertEquals(roomId, popup.getData().get("roomId"));
@@ -288,13 +312,13 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
                                                           .thenReturn("/portal/dw/stream?roomId=!other:server")
                                                           .thenReturn("/portal/dw/stream?myroomId=1");
     String defaultSiteUrl = "/portal/dw?message=evt2";
-    String defaultSiteRoomUrl = "/portal/dw?roomId=" + roomId + "&message=evt2";
+    String defaultSiteRoomUrl = "/portal/dw?roomId=" + encodedRoomId + "&message=evt2";
     PwaNotificationMessage fallbackPopup = builders.getAllValues().get(0).build("device4");
     assertEquals(defaultSiteUrl, fallbackPopup.getUrl());
     assertEquals(defaultSiteRoomUrl, fallbackPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
     PwaNotificationMessage queryPopup = builders.getAllValues().get(0).build("device5");
     assertEquals("/portal/dw/stream?tab=1&message=evt2", queryPopup.getUrl());
-    assertEquals("/portal/dw/stream?tab=1&roomId=" + roomId + "&message=evt2",
+    assertEquals("/portal/dw/stream?tab=1&roomId=" + encodedRoomId + "&message=evt2",
                  queryPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
     assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device6").getUrl());
     assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device7").getUrl());
@@ -305,7 +329,7 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     // a parameter merely ending in roomId is not one: that home is kept
     PwaNotificationMessage decoyPopup = builders.getAllValues().get(0).build("device10");
     assertEquals("/portal/dw/stream?myroomId=1&message=evt2", decoyPopup.getUrl());
-    assertEquals("/portal/dw/stream?myroomId=1&roomId=" + roomId + "&message=evt2",
+    assertEquals("/portal/dw/stream?myroomId=1&roomId=" + encodedRoomId + "&message=evt2",
                  decoyPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
 
     // a read watermark cancels the pending fires it covers
@@ -348,7 +372,9 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
                                                     "This is a chat message",
                                                     "m.text",
                                                     tomIdOnMatrix,
-                                                    Collections.singletonList("@demo:matrix.meeds.tn"),
+                                                    // two mentions, the recipient first: every mention must
+                                                    // match, not only the last one of the message
+                                                    List.of("@demo:matrix.meeds.tn", "@tom:matrix.meeds.tn"),
                                                     123456789);
     when(matrixHttpClient.getEventById(eventId, roomId, accessToken)).thenReturn(matrixMessage);
 
@@ -471,6 +497,45 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     assertThrows(IllegalAccessException.class,
                  () -> chatNotificationService.markRoomAsRead("john", roomId, "evtRead", null));
     assertThrows(IllegalArgumentException.class, () -> chatNotificationService.markRoomAsRead("demo", roomId, "", null));
+  }
+
+  @Test
+  void markRoomAsReadTakesTheWatermarkFromTheEventNotTheCaller() throws Exception {
+    lenient().when(userStateModel.getStatus()).thenReturn("available");
+    lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
+    ((java.util.Map<?, ?>) ReflectionTestUtils.getField(chatNotificationService, "pendingMessages")).clear();
+    Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
+    matrixService.saveUserAccount(demoIdentity, true);
+    Space space = getSpaceInstance(6);
+    spacesToDelete.add(space);
+    String roomId = matrixService.getRoomBySpace(space).getRoomId();
+    when(matrixHttpClient.getAccessToken(anyString())).thenReturn("sys_demoUserAccessToken");
+    ((org.exoplatform.services.cache.ExoCache<?, ?>) ReflectionTestUtils.getField(matrixService,
+                                                                                 "userAccessTokensCache")).clearCache();
+    // the event is read back with the user's own token: its origin_server_ts is
+    // on the same clock as the buffered messages the watermark is compared to,
+    // where the caller's timestamp is the platform's and may be minutes off
+    when(matrixHttpClient.getEventById("evtRead", roomId, "sys_demoUserAccessToken"))
+                                                                                     .thenReturn(new MatrixMessage("evtRead",
+                                                                                                                   roomId,
+                                                                                                                   "m.room.message",
+                                                                                                                   "read me",
+                                                                                                                   "m.text",
+                                                                                                                   "@tom:matrix.meeds.tn",
+                                                                                                                   new ArrayList<>(),
+                                                                                                                   7000L));
+    doReturn(null).when(settingService)
+                  .get(Context.USER.id("demo"),
+                       USER_CHAT_NOTIFICATION_SCOPE,
+                       ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId);
+    chatNotificationService.markRoomAsRead("demo", roomId, "evtRead", 1L);
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    ArgumentCaptor<SettingValue<?>> saved = ArgumentCaptor.forClass((Class) SettingValue.class);
+    verify(settingService).set(eq(Context.USER.id("demo")),
+                               eq(USER_CHAT_NOTIFICATION_SCOPE),
+                               eq(ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId),
+                               saved.capture());
+    assertEquals("7000", String.valueOf(saved.getValue().getValue()));
   }
 
   @Test
