@@ -128,6 +128,8 @@ public class ChatNotificationService {
    */
   public static final String        OPEN_ROOM_CLIENT_ACTION      = "meeds-chat-open-room-from-push";
 
+  private static final String       MATRIX_ROOM_ID_PARAM         = "roomId";
+
   public static final String        READ_WATERMARK_KEY_PREFIX    = "readWatermark:";
 
   private static final int          POPUP_BODY_MAX_LENGTH        = 150;
@@ -367,18 +369,13 @@ public class ChatNotificationService {
   }
 
   /**
-   * Where a popup click lands when no app page is open: the page the user
-   * lands on when opening the app (their home page, else the default site
-   * node — what a bare /portal redirects to). The room is not opened there,
-   * which is why the url carries no {@code roomId}: with the app closed the
-   * click opens the app, opening the room is the in-page client action. A
-   * home that is not an absolute path of this origin (an external link page,
-   * a fragment) is replaced by the default site, since the service worker
-   * prefixes the url with the origin. {@code message} carries the notified
-   * event for a future scroll-to-message; no client reads it today, and such
-   * a client would need the room back in the url to fetch the event.
+   * The page the user lands on when opening the app: their home page, else the
+   * default site node — what a bare /portal redirects to. A home that is not
+   * an absolute path of this origin (an external link page, a fragment) is
+   * replaced by the default site, since the service worker prefixes the url
+   * with the origin.
    */
-  private String getHomeLink(String userName, String eventId) {
+  private String getHomePath(String userName) {
     String home = null;
     try {
       home = portalConfigService.getDefaultPath(userName);
@@ -387,17 +384,34 @@ public class ChatNotificationService {
                userName,
                e.getMessage());
     }
-    if (!isPortalPagePath(home)) {
-      home = "/portal/" + portalConfigService.getMetaPortal();
-    }
-    return home + (home.contains("?") ? "&" : "?") + "message=" + eventId;
+    return isPortalPagePath(home) ? home : "/portal/" + portalConfigService.getMetaPortal();
+  }
+
+  private static String withQuery(String path, String query) {
+    return path + (path.contains("?") ? "&" : "?") + query;
   }
 
   private static boolean isPortalPagePath(String path) {
     return StringUtils.isNotBlank(path)
            && path.startsWith("/")
            && !path.startsWith("//")
-           && !path.contains("#");
+           && !path.contains("#")
+           // a home carrying its own roomId would win over the one appended
+           // below, the chat button reading the first value of the parameter
+           && !carriesRoomId(path);
+  }
+
+  private static boolean carriesRoomId(String path) {
+    int queryIndex = path.indexOf('?');
+    if (queryIndex < 0) {
+      return false;
+    }
+    for (String parameter : StringUtils.split(path.substring(queryIndex + 1), '&')) {
+      if (StringUtils.equals(parameter, MATRIX_ROOM_ID_PARAM) || parameter.startsWith(MATRIX_ROOM_ID_PARAM + "=")) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private PwaNotificationMessage buildRoomPopup(String userName, String roomId, String subscriptionId, long messageTimestamp) {
@@ -436,7 +450,11 @@ public class ChatNotificationService {
       popup.setTitle(title);
       popup.setBody(body);
       popup.setIcon(latest.icon());
-      popup.setUrl(getHomeLink(userName, latest.eventId()));
+      String home = getHomePath(userName);
+      // with no app page open, the click only opens the app on the user's
+      // landing page: the room stays closed. {@code message} carries the
+      // notified event for a future scroll-to-message; no client reads it yet
+      popup.setUrl(withQuery(home, "message=" + latest.eventId()));
       // one popup per room; the tag is also the object the "mark as read" action
       // token is scoped to (pwa hands it back as the trusted room id)
       popup.setTag(roomId);
@@ -444,12 +462,16 @@ public class ChatNotificationService {
       popup.setLang(locale.toLanguageTag());
       // quick action: shown where the OS supports notification actions
       popup.setActions(List.of(new PwaNotificationAction(formatLabel(MARK_READ_LABEL_KEY, locale, ""), MARK_READ_ACTION)));
-      popup.setData(Map.of("roomId", roomId,
+      popup.setData(Map.of(MATRIX_ROOM_ID_PARAM, roomId,
                            "eventId", latest.eventId(),
                            "ts", String.valueOf(latest.timestamp()),
-                           // click: open the room in the page already open, or
-                           // follow the url (which opens the room on load)
-                           PwaNotificationService.DIRECT_CLIENT_ACTION_DATA, OPEN_ROOM_CLIENT_ACTION));
+                           // click: open the room in the page already open
+                           PwaNotificationService.DIRECT_CLIENT_ACTION_DATA, OPEN_ROOM_CLIENT_ACTION,
+                           // an app page that cannot open the room in place is
+                           // navigated to it instead — a page kept in the
+                           // background is often frozen and answers nothing
+                           PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA,
+                           withQuery(home, MATRIX_ROOM_ID_PARAM + "=" + roomId + "&message=" + latest.eventId())));
       return popup;
     } catch (Exception e) {
       // a failed build must not consume the device's popup: re-arm and rethrow
