@@ -249,6 +249,9 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     // with no app page open, the click lands on the recipient's landing page,
     // without opening the room — not on the space permalink, which is not resolved
     assertEquals("/portal/dw/stream?message=evt2", popup.getUrl());
+    // an app page open but unable to act in place is navigated to the room
+    assertEquals("/portal/dw/stream?roomId=" + roomId + "&message=evt2",
+                 popup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
     verify(mockedPermanentLinkService, never()).getLink(any());
     assertEquals(roomId, popup.getData().get("roomId"));
     // click opens the room in the already-open page instead of reloading it
@@ -275,20 +278,35 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
 
     // the landing page is resolved at fire time: a failed lookup falls back to
     // the default site, a home carrying a query keeps it, and a home that is not
-    // a page of this portal (external link page, fragment, protocol-relative)
-    // is replaced by the default site
+    // a page of this portal (external link page, fragment, protocol-relative,
+    // or one carrying its own roomId) is replaced by the default site
     when(mockedPortalConfigService.getDefaultPath("john")).thenThrow(new IllegalStateException("no navigation"))
                                                           .thenReturn("/portal/dw/stream?tab=1")
                                                           .thenReturn("https://example.org/home")
                                                           .thenReturn("/portal/dw/stream#top")
-                                                          .thenReturn("//example.org/home");
+                                                          .thenReturn("//example.org/home")
+                                                          .thenReturn("/portal/dw/stream?roomId=!other:server")
+                                                          .thenReturn("/portal/dw/stream?myroomId=1");
     String defaultSiteUrl = "/portal/dw?message=evt2";
-    assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device4").getUrl());
-    assertEquals("/portal/dw/stream?tab=1&message=evt2",
-                 builders.getAllValues().get(0).build("device5").getUrl());
+    String defaultSiteRoomUrl = "/portal/dw?roomId=" + roomId + "&message=evt2";
+    PwaNotificationMessage fallbackPopup = builders.getAllValues().get(0).build("device4");
+    assertEquals(defaultSiteUrl, fallbackPopup.getUrl());
+    assertEquals(defaultSiteRoomUrl, fallbackPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
+    PwaNotificationMessage queryPopup = builders.getAllValues().get(0).build("device5");
+    assertEquals("/portal/dw/stream?tab=1&message=evt2", queryPopup.getUrl());
+    assertEquals("/portal/dw/stream?tab=1&roomId=" + roomId + "&message=evt2",
+                 queryPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
     assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device6").getUrl());
     assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device7").getUrl());
     assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device8").getUrl());
+    PwaNotificationMessage otherRoomPopup = builders.getAllValues().get(0).build("device9");
+    assertEquals(defaultSiteUrl, otherRoomPopup.getUrl());
+    assertEquals(defaultSiteRoomUrl, otherRoomPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
+    // a parameter merely ending in roomId is not one: that home is kept
+    PwaNotificationMessage decoyPopup = builders.getAllValues().get(0).build("device10");
+    assertEquals("/portal/dw/stream?myroomId=1&message=evt2", decoyPopup.getUrl());
+    assertEquals("/portal/dw/stream?myroomId=1&roomId=" + roomId + "&message=evt2",
+                 decoyPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
 
     // a read watermark cancels the pending fires it covers
     when(matrixHttpClient.getEventById("evt3", roomId, accessToken))

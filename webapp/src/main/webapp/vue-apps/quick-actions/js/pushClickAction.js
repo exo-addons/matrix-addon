@@ -46,7 +46,7 @@ function openRoom(roomId) {
  * already on: the pwa service worker forwards the popup's client action to the
  * focused app page instead of reloading it. Claiming the event (preventDefault)
  * tells pwa the action is owned here; when the room cannot be opened after all,
- * the popup's own url is followed, which is what an unclaimed click would do.
+ * the page is navigated to it, which is what an unclaimed click would do.
  */
 document.addEventListener(chatConstants.ACTION_OPEN_CHAT_ROOM_FROM_PUSH, event => {
   const roomId = event?.detail?.roomId;
@@ -57,7 +57,10 @@ document.addEventListener(chatConstants.ACTION_OPEN_CHAT_ROOM_FROM_PUSH, event =
   openRoom(roomId)
     .catch(error => {
       console.error('Error opening the chat room of a push notification', error);
-      const url = event?.detail?.url;
+      // the room url pwa navigates an unclaimed click to: opening the room
+      // failed here, but a page load still opens it (the chat button reads
+      // roomId from the url). The popup url only opens the app
+      const url = event?.detail?.clientActionUrl || event?.detail?.url;
       if (url?.startsWith(`${window.location.origin}/`)) {
         window.location.href = url;
       }
