@@ -1321,6 +1321,36 @@ public class MatrixService {
   }
 
   /**
+   * Reads one event back with the user's own Matrix identity, so an event of a
+   * room the administrator account cannot see (a direct message) resolves too.
+   *
+   * @param userName the platform user
+   * @param roomId the room (local or full id)
+   * @param eventId the event to read back
+   * @return the event, or null when it cannot be read
+   */
+  public MatrixMessage getRoomEventAsUser(String userName, String roomId, String eventId) {
+    return callAsUser(userName, null, accessToken -> matrixHttpClient.getEventById(eventId, roomId, accessToken));
+  }
+
+  /**
+   * Marks a room as read for a user up to an event, with the user's own Matrix
+   * identity (server-side read anchor): posts the {@code m.read} receipt so
+   * every client of the user converges through Matrix sync.
+   *
+   * @param userName the platform user
+   * @param roomId the room (local or full id)
+   * @param eventId the event read up to (high-water mark)
+   * @return true when the receipt was posted
+   */
+  public boolean markRoomAsRead(String userName, String roomId, String eventId) {
+    return callAsUser(userName, false, accessToken -> {
+      matrixHttpClient.sendReadReceipt(roomId, eventId, accessToken);
+      return true;
+    });
+  }
+
+  /**
    * Returns a Matrix access token for the given Meeds user, minted with the same
    * JWT login the browser uses so server-side reads/writes happen with the user's
    * own identity and permissions. Tokens are cached per user to avoid creating a
@@ -1376,7 +1406,7 @@ public class MatrixService {
       LOG.error("Matrix chat operation interrupted for user {}", userName, e);
       return fallback;
     } catch (Exception e) {
-      LOG.error("Matrix chat operation failed for user {}", userName, e);
+      LOG.warn("Matrix chat operation failed for user {}", userName, e);
       return fallback;
     }
   }

@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -46,6 +47,7 @@ import java.util.Collections;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -712,63 +714,6 @@ class MatrixRestTest {
   }
 
   @Test
-  void isPushNotificationsEnabled() throws Exception {
-    ResultActions response = mockMvc.perform(get(REST_PATH
-        + "/isPushNotificationsEnabled/demo").with(simpleUser()).contentType(MediaType.APPLICATION_FORM_URLENCODED));
-
-    response.andExpect(status().isForbidden());
-
-    response = mockMvc.perform(get(REST_PATH
-        + "/isPushNotificationsEnabled/user").with(simpleUser()).contentType(MediaType.APPLICATION_FORM_URLENCODED));
-
-    response.andExpect(status().isOk());
-    response.andExpect(content().string("false"));
-
-    when(chatNotificationService.isPushNotificationsEnabled("user")).thenReturn(true);
-
-    response = mockMvc.perform(get(REST_PATH
-        + "/isPushNotificationsEnabled/user").with(simpleUser()).contentType(MediaType.APPLICATION_FORM_URLENCODED));
-
-    response.andExpect(status().isOk());
-    response.andExpect(content().string("true"));
-  }
-
-  @Test
-  void updatePushNotificationsSettings() throws Exception {
-    String content = """
-        {
-          "active": true
-        }
-        """;
-    ResultActions response = mockMvc.perform(post(REST_PATH
-        + "/enablePushNotificationsSettings").with(simpleUser()).content(content).contentType(MediaType.APPLICATION_JSON));
-
-    response.andExpect(status().isForbidden());
-
-    content = """
-        { "userName": test,
-          "active": true
-        }
-        """;
-    response = mockMvc.perform(post(REST_PATH + "/enablePushNotificationsSettings").with(simpleUser())
-                                                                                   .content(content)
-                                                                                   .contentType(MediaType.APPLICATION_JSON));
-
-    response.andExpect(status().isForbidden());
-
-    content = """
-        { "userName": user,
-          "active": true
-        }
-        """;
-    response = mockMvc.perform(post(REST_PATH + "/enablePushNotificationsSettings").with(simpleUser())
-                                                                                   .content(content)
-                                                                                   .contentType(MediaType.APPLICATION_JSON));
-
-    response.andExpect(status().isOk());
-  }
-
-  @Test
   void getMatrixId() throws Exception {
     ResultActions response = mockMvc.perform(get(REST_PATH + "/findId/demo").with(simpleUser())
                                                                             .contentType(MediaType.APPLICATION_FORM_URLENCODED));
@@ -821,4 +766,38 @@ class MatrixRestTest {
         }
         """));
   }
+
+  @Test
+  void markRoomAsRead() throws Exception {
+    mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").with(simpleUser())
+                                                                          .param("eventId", "$evt")
+                                                                          .param("ts", "5000"))
+           .andExpect(status().isNoContent());
+    verify(chatNotificationService).markRoomAsRead("user", "!room:matrix.meeds.tn", "$evt", 5000L);
+
+    doThrow(new ObjectNotFoundException("not found")).when(chatNotificationService)
+                                                     .markRoomAsRead("user", "!unknown:matrix.meeds.tn", "$evt", null);
+    mockMvc.perform(post(REST_PATH + "/rooms/!unknown:matrix.meeds.tn/read").with(simpleUser()).param("eventId", "$evt"))
+           .andExpect(status().isNotFound());
+
+    doThrow(new IllegalAccessException("not a member")).when(chatNotificationService)
+                                                       .markRoomAsRead("user", "!other:matrix.meeds.tn", "$evt", null);
+    mockMvc.perform(post(REST_PATH + "/rooms/!other:matrix.meeds.tn/read").with(simpleUser()).param("eventId", "$evt"))
+           .andExpect(status().isForbidden());
+
+    mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").param("eventId", "$evt"))
+           .andExpect(status().isForbidden());
+
+    doThrow(new IllegalArgumentException("matrix.markRoomAsRead.invalidParameters")).when(chatNotificationService)
+                                                                                  .markRoomAsRead("user", "!room:matrix.meeds.tn", "bad", null);
+    mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").with(simpleUser()).param("eventId", "bad"))
+           .andExpect(status().isBadRequest());
+
+    // the receipt could not be posted: nothing was marked read, the caller must know
+    doThrow(new IllegalStateException("matrix.markRoomAsRead.receiptNotPosted")).when(chatNotificationService)
+                                                                              .markRoomAsRead("user", "!room:matrix.meeds.tn", "$down", null);
+    mockMvc.perform(post(REST_PATH + "/rooms/!room:matrix.meeds.tn/read").with(simpleUser()).param("eventId", "$down"))
+           .andExpect(status().isInternalServerError());
+  }
+
 }

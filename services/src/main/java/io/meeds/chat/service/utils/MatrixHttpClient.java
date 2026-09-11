@@ -1632,6 +1632,39 @@ public class MatrixHttpClient {
   }
 
   /**
+   * Posts an {@code m.read} receipt on behalf of a user: a Matrix read
+   * receipt is a high-water mark, everything up to the event becomes read.
+   *
+   * @param matrixRoomId the room local id
+   * @param eventId the event read up to
+   * @param accessToken the user's Matrix access token
+   */
+  public void sendReadReceipt(String matrixRoomId, String eventId, String accessToken) throws IOException,
+                                                                                       InterruptedException {
+    if (StringUtils.isBlank(PropertyManager.getProperty(MATRIX_SERVER_URL))) {
+      throw new IllegalArgumentException(MATRIX_SERVER_URL_IS_REQUIRED);
+    }
+    String fullRoomId = matrixRoomId.contains(":") ? matrixRoomId
+                                                   : matrixRoomId + ":" + PropertyManager.getProperty(MATRIX_SERVER_NAME);
+    // the event id is client-supplied and, depending on the room version, may
+    // carry ':', '/', '+' or '=' — it is a path segment, so it is encoded
+    String url = PropertyManager.getProperty(MATRIX_SERVER_URL) + ROOMS_API_PATH + fullRoomId + "/receipt/m.read/"
+        + URLEncoder.encode(eventId, StandardCharsets.UTF_8);
+    // the web client sends the same threaded receipt: its sync handler resets
+    // the room badge only when thread_id is present
+    String payload = new JSONObject().put("thread_id", "main").toString();
+    HttpResponse<String> response = sendHttpPostRequest(url, accessToken, payload);
+    if (response.statusCode() == 401) {
+      throw new MatrixUnauthorizedException("Access token rejected while sending a read receipt to room " + matrixRoomId);
+    }
+    if (response.statusCode() < 200 || response.statusCode() >= 300) {
+      throw new MatrixException("Error sending a read receipt to room %s, Matrix server returned HTTP %s error %s".formatted(matrixRoomId,
+                                                                                                                             String.valueOf(response.statusCode()),
+                                                                                                                             response.body()));
+    }
+  }
+
+  /**
    * Invalidates an access token on Matrix server
    *
    * @param accessToken

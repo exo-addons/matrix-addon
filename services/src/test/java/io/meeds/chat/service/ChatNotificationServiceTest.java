@@ -4,10 +4,17 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import io.meeds.chat.MatrixBaseTest;
 import io.meeds.chat.model.MatrixMessage;
 import io.meeds.chat.model.Room;
+import io.meeds.portal.permlink.service.PermanentLinkService;
+import io.meeds.pwa.model.PwaDirectNotificationBuilder;
 import io.meeds.pwa.model.PwaNotificationMessage;
 import io.meeds.pwa.service.PwaNotificationService;
 import io.meeds.social.util.JsonUtils;
+import org.exoplatform.commons.api.notification.NotificationContext;
+import org.exoplatform.commons.api.notification.command.NotificationCommand;
+import org.exoplatform.commons.api.notification.command.NotificationExecutor;
+import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.commons.api.notification.model.NotificationInfo;
+import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.api.notification.model.UserSetting;
 import org.exoplatform.commons.api.notification.model.WebNotificationFilter;
 import org.exoplatform.commons.api.notification.service.WebNotificationService;
@@ -18,6 +25,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.portal.config.UserPortalConfigService;
 import org.exoplatform.services.resources.LocaleConfig;
 import org.exoplatform.services.resources.Orientation;
 import org.exoplatform.services.resources.ResourceBundleService;
@@ -27,11 +35,10 @@ import org.exoplatform.services.user.UserStateService;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.social.core.space.model.Space;
-import org.exoplatform.social.websocket.entity.WebSocketMessage;
-import org.exoplatform.ws.frameworks.cometd.ContinuationService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,12 +46,19 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.*;
 
-import static io.meeds.chat.service.ChatNotificationService.PUSH_NOTIFICATIONS_SETTINGS;
 import static io.meeds.chat.service.ChatNotificationService.USER_CHAT_NOTIFICATION_SCOPE;
 import static io.meeds.chat.service.utils.MatrixConstants.MATRIX_MENTION_RECEIVED_NOTIFICATION_PLUGIN;
+import static io.meeds.chat.service.utils.MatrixConstants.MATRIX_ROOM_ID;
+import static io.meeds.chat.service.utils.MatrixConstants.MATRIX_ROOM_MEMBER;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+/*
+ * The push wire itself is never exercised here: PwaNotificationService is mocked
+ * at the seam, so the deferred send, the Web Push encryption and what a device
+ * displays are covered only by a manual run on the acceptance server. These
+ * tests pin the reception rules, the buffering and the payload handed to pwa.
+ */
 class ChatNotificationServiceTest extends MatrixBaseTest {
 
   @Autowired
@@ -61,6 +75,12 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
 
   @Autowired
   WebNotificationService             webNotificationService;
+
+  @Autowired
+  UserPortalConfigService            portalConfigService;
+
+  @Autowired
+  PermanentLinkService               permanentLinkService;
 
   @Mock
   private UserStateService           userStateService;
@@ -80,9 +100,6 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
   @Mock
   private ResourceBundleService      resourceBundleService;
 
-  @Mock
-  private ContinuationService        continuationService;
-
   private MockedStatic<CommonsUtils> commonsUtils;
 
   @BeforeEach
@@ -92,15 +109,19 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
     commonsUtils = mockStatic(CommonsUtils.class, CALLS_REAL_METHODS);
     commonsUtils.when(() -> CommonsUtils.getService(UserStateService.class)).thenReturn(userStateService);
     commonsUtils.when(() -> CommonsUtils.getService(UserSettingService.class)).thenReturn(userSettingService);
-    commonsUtils.when(() -> CommonsUtils.getService(ContinuationService.class)).thenReturn(continuationService);
     lenient().when(userStateService.getUserState(anyString())).thenReturn(userStateModel);
     lenient().when(userSettingService.get(anyString())).thenReturn(userSetting);
     ReflectionTestUtils.setField(chatNotificationService, "settingService", settingService);
+    ReflectionTestUtils.setField(ChatNotificationService.class, "userStateService", null);
+    ReflectionTestUtils.setField(ChatNotificationService.class, "userSettingService", null);
   }
 
   @AfterEach
   @Override
   public void tearDown() {
+    ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", pwaNotificationService);
+    ReflectionTestUtils.setField(chatNotificationService, "portalConfigService", portalConfigService);
+    ReflectionTestUtils.setField(chatNotificationService, "permanentLinkService", permanentLinkService);
     super.tearDown();
     if (commonsUtils != null) {
       commonsUtils.close();
@@ -108,227 +129,421 @@ class ChatNotificationServiceTest extends MatrixBaseTest {
   }
 
   @Test
-  void sendCreateNotificationAction() throws Exception {
+  void onMatrixPushReceivedGuards() throws Exception {
     Space space = getSpaceInstance(2);
     String roomId = matrixService.getRoomBySpace(space).getRoomId();
-    PwaNotificationService mockedPWANotificationService = mock(PwaNotificationService.class);
-    ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPWANotificationService);
+    PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
+    ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
     String eventId = "eventIDOnMatrix";
 
-    // Create mention
     MatrixMessage matrixMessage = new MatrixMessage(eventId,
                                                     roomId,
                                                     "m.room.message",
                                                     "Message content",
                                                     "m.text",
                                                     "@sender:matrix.meeds.tn",
-                                                    Collections.singletonList("@demo:matrix.meeds.tn"),
+                                                    new ArrayList<>(),
                                                     123456789);
     when(matrixHttpClient.getEventById(eventId, roomId, accessToken)).thenReturn(matrixMessage);
 
-    // Sending notifications using Push providers
-    when(continuationService.isPresent(anyString())).thenReturn(false);
-
     when(userStateModel.getStatus()).thenReturn("available");
-    chatNotificationService.sendCreateNotificationAction(eventId, "demo", roomId, 5);
-    // Notification will be sent
-    verify(mockedPWANotificationService, times(1)).create(any(Map.class));
-
-    when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
-    chatNotificationService.sendCreateNotificationAction(eventId, "demo", roomId, 5);
-    // Notification will be sent
-    verify(mockedPWANotificationService, times(2)).create(any(Map.class));
+    chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
+    // a deferred popup is scheduled for the recipient device(s)
+    verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(eq("demo"),
+                                                                              eq(ChatNotificationService.CHAT_NOTIFICATION_KIND),
+                                                                              eq(ChatNotificationService.DEFAULT_UNREAD_DELAY_SECONDS),
+                                                                              any());
 
     when(userStateModel.getStatus()).thenReturn("donotdisturb");
-    when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
-    chatNotificationService.sendCreateNotificationAction(eventId, "demo", roomId, 5);
-    // Notification won't be sent : user status is Do not disturb
-    verify(mockedPWANotificationService, times(2)).create(any(Map.class));
+    chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
+    // user status is Do not disturb: nothing scheduled
+    verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(anyString(), anyString(), anyLong(), any());
 
     when(userStateModel.getStatus()).thenReturn("available");
     when(userSetting.isSpaceMuted(anyLong())).thenReturn(true);
-    chatNotificationService.sendCreateNotificationAction(eventId, "demo", roomId, 5);
-    // Notification won't be sent: space is muted
-    verify(mockedPWANotificationService, times(2)).create(any(Map.class));
+    chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
+    // space is muted: nothing scheduled
+    verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(anyString(), anyString(), anyLong(), any());
 
-    // Sending notifications using Web sockets
-    when(continuationService.isPresent(anyString())).thenReturn(true);
+    lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
+    // a reaction or state event is never notified: the event resolver only
+    // returns m.room.message events
+    when(matrixHttpClient.getEventById(eventId, roomId, accessToken)).thenReturn(new MatrixMessage(eventId,
+                                                                                                   roomId,
+                                                                                                   "m.reaction",
+                                                                                                   null,
+                                                                                                   null,
+                                                                                                   "@sender:matrix.meeds.tn",
+                                                                                                   new ArrayList<>(),
+                                                                                                   123456790));
+    chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
+    verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(anyString(), anyString(), anyLong(), any());
 
-    when(userStateModel.getStatus()).thenReturn("available");
-    when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
-    chatNotificationService.sendCreateNotificationAction(eventId, "demo", roomId, 5);
-    // Notification will be sent
-    verify(continuationService, times(1)).sendMessage(anyString(), anyString(), any(WebSocketMessage.class));
+    // nothing can fire (PWA disabled or no subscribed device): nothing is
+    // buffered nor scheduled
+    when(matrixHttpClient.getEventById(eventId, roomId, accessToken)).thenReturn(matrixMessage);
+    when(mockedPwaNotificationService.canReceiveDirectNotifications(eq("demo"), anyString())).thenReturn(false);
+    chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
+    verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(anyString(), anyString(), anyLong(), any());
 
-    when(userStateModel.getStatus()).thenReturn("donotdisturb");
-    when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
-    chatNotificationService.sendCreateNotificationAction(eventId, "demo", roomId, 5);
-    // Notification won't be sent : user status is Do not disturb
-    verify(continuationService, times(1)).sendMessage(anyString(), anyString(),  any(WebSocketMessage.class));
-
-    when(userStateModel.getStatus()).thenReturn("available");
-    when(userSetting.isSpaceMuted(anyLong())).thenReturn(true);
-    chatNotificationService.sendCreateNotificationAction(eventId, "demo", roomId, 5);
-    // Notification won't be sent: space is muted
-    verify(continuationService, times(1)).sendMessage(anyString(), anyString(),  any(WebSocketMessage.class));
-
+    // the recipient wrote the message: nothing is scheduled for its own author.
+    // The sender guard runs before the "can any device receive" one, so that
+    // stub stays unused here — which is the point
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(eq("demo"), anyString())).thenReturn(true);
+    String demoIdOnMatrix = matrixService.saveUserAccount(identityManager.getOrCreateUserIdentity("demo"), true);
+    when(matrixHttpClient.getEventById(eventId, roomId, accessToken)).thenReturn(new MatrixMessage(eventId,
+                                                                                                   roomId,
+                                                                                                   "m.room.message",
+                                                                                                   "my own message",
+                                                                                                   "m.text",
+                                                                                                   demoIdOnMatrix,
+                                                                                                   new ArrayList<>(),
+                                                                                                   123456791));
+    chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
+    verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(anyString(), anyString(), anyLong(), any());
   }
 
   @Test
-  void createNotification() throws Exception {
+  void buildRoomPopupAggregatesPerRoom() throws Exception {
     lenient().when(userStateModel.getStatus()).thenReturn("available");
     lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
-    String eventId = "eventIDOnMatrix";
-    Space space = getSpaceInstance(1);
-    String roomId = matrixService.getRoomBySpace(space).getRoomId();
-    String userName = "demo";
-    Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
-    String userIdOnMatrix = matrixService.saveUserAccount(demoIdentity, true);
+    PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
+    ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
+    // the popup url is the recipient's landing page, never the message permalink:
+    // give both a distinguishable answer so the assertion below is a real pin
+    UserPortalConfigService mockedPortalConfigService = mock(UserPortalConfigService.class);
+    lenient().when(mockedPortalConfigService.getDefaultPath("john")).thenReturn("/portal/dw/stream");
+    lenient().when(mockedPortalConfigService.getMetaPortal()).thenReturn("dw");
+    ReflectionTestUtils.setField(chatNotificationService, "portalConfigService", mockedPortalConfigService);
+    PermanentLinkService mockedPermanentLinkService = mock(PermanentLinkService.class);
+    lenient().when(mockedPermanentLinkService.getLink(any())).thenReturn("/portal/g/:spaces:space4/space4/");
+    ReflectionTestUtils.setField(chatNotificationService, "permanentLinkService", mockedPermanentLinkService);
+    LocaleConfigImpl localeConfig = new LocaleConfigImpl();
+    localeConfig.setLocale(Locale.ENGLISH);
+    localeConfig.setOrientation(Orientation.LT);
+    when(mockedPwaNotificationService.getLocaleConfig(anyString())).thenReturn(localeConfig);
 
+    Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
+    String senderIdOnMatrix = matrixService.saveUserAccount(demoIdentity, true);
+    Space space = getSpaceInstance(4);
+    spacesToDelete.add(space);
+    String roomId = matrixService.getRoomBySpace(space).getRoomId();
+
+    when(matrixHttpClient.getEventById("evt1", roomId, accessToken))
+                                                                    .thenReturn(new MatrixMessage("evt1",
+                                                                                                  roomId,
+                                                                                                  "m.room.message",
+                                                                                                  "first message",
+                                                                                                  "m.text",
+                                                                                                  senderIdOnMatrix,
+                                                                                                  new ArrayList<>(),
+                                                                                                  1000L));
+    when(matrixHttpClient.getEventById("evt2", roomId, accessToken))
+                                                                    .thenReturn(new MatrixMessage("evt2",
+                                                                                                  roomId,
+                                                                                                  "m.room.message",
+                                                                                                  "second message",
+                                                                                                  "m.text",
+                                                                                                  senderIdOnMatrix,
+                                                                                                  new ArrayList<>(),
+                                                                                                  2000L));
+
+    chatNotificationService.onMatrixPushReceived("evt1", roomId, "john", "pushKey");
+    chatNotificationService.onMatrixPushReceived("evt2", roomId, "john", "pushKey");
+
+    ArgumentCaptor<PwaDirectNotificationBuilder> builders = ArgumentCaptor.forClass(PwaDirectNotificationBuilder.class);
+    verify(mockedPwaNotificationService, times(2)).scheduleDirectNotification(eq("john"),
+                                                                              eq(ChatNotificationService.CHAT_NOTIFICATION_KIND),
+                                                                              eq(ChatNotificationService.DEFAULT_UNREAD_DELAY_SECONDS),
+                                                                              builders.capture());
+
+    // first fire: one popup per room — latest unread message + count of others
+    PwaNotificationMessage popup = builders.getAllValues().get(0).build("device1");
+    assertNotNull(popup);
+    assertNotNull(popup.getTitle());
+    assertEquals(roomId, popup.getTag());
+    assertTrue(popup.isRenotify());
+    assertTrue(popup.getBody().startsWith("second message"));
+    assertTrue(popup.getBody().contains("1 more"));
+    assertEquals("evt2", popup.getData().get("eventId"));
+    // the room id is a Matrix id: query-encoded, so a reader gets it back intact
+    String encodedRoomId = roomId.replace("!", "%21").replace(":", "%3A");
+    // with no app page open, the click lands on the recipient's landing page,
+    // without opening the room — not on the space permalink, which is not resolved
+    assertEquals("/portal/dw/stream?message=evt2", popup.getUrl());
+    // an app page open but unable to act in place is navigated to the room
+    assertEquals("/portal/dw/stream?roomId=" + encodedRoomId + "&message=evt2",
+                 popup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
+    verify(mockedPermanentLinkService, never()).getLink(any());
+    assertEquals(roomId, popup.getData().get("roomId"));
+    // click opens the room in the already-open page instead of reloading it
+    assertEquals(ChatNotificationService.OPEN_ROOM_CLIENT_ACTION,
+                 popup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_DATA));
+
+    // second fire on the SAME device: already covered by its displayed popup
+    assertNull(builders.getAllValues().get(1).build("device1"));
+
+    // another device pops its own copy: coverage is per device
+    PwaNotificationMessage secondDevicePopup = builders.getAllValues().get(0).build("device2");
+    assertNotNull(secondDevicePopup);
+    assertEquals(roomId, secondDevicePopup.getTag());
+
+    // a failed send re-arms the device: the batch pops again on a later fire
+    builders.getAllValues().get(0).onSendFailure("device1", popup);
+    assertNotNull(builders.getAllValues().get(1).build("device1"));
+
+    // a build failure must not consume the device's popup either
+    when(mockedPwaNotificationService.getLocaleConfig(anyString())).thenThrow(new IllegalStateException("boom"))
+                                                                   .thenReturn(localeConfig);
+    assertThrows(IllegalStateException.class, () -> builders.getAllValues().get(0).build("device3"));
+    assertNotNull(builders.getAllValues().get(0).build("device3"));
+
+    // the landing page is resolved at fire time: a failed lookup falls back to
+    // the default site, a home carrying a query keeps it, and a home that is not
+    // a page of this portal (external link page, fragment, protocol-relative,
+    // or one carrying its own roomId) is replaced by the default site
+    when(mockedPortalConfigService.getDefaultPath("john")).thenThrow(new IllegalStateException("no navigation"))
+                                                          .thenReturn("/portal/dw/stream?tab=1")
+                                                          .thenReturn("https://example.org/home")
+                                                          .thenReturn("/portal/dw/stream#top")
+                                                          .thenReturn("//example.org/home")
+                                                          .thenReturn("/portal/dw/stream?roomId=!other:server")
+                                                          .thenReturn("/portal/dw/stream?myroomId=1");
+    String defaultSiteUrl = "/portal/dw?message=evt2";
+    String defaultSiteRoomUrl = "/portal/dw?roomId=" + encodedRoomId + "&message=evt2";
+    PwaNotificationMessage fallbackPopup = builders.getAllValues().get(0).build("device4");
+    assertEquals(defaultSiteUrl, fallbackPopup.getUrl());
+    assertEquals(defaultSiteRoomUrl, fallbackPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
+    PwaNotificationMessage queryPopup = builders.getAllValues().get(0).build("device5");
+    assertEquals("/portal/dw/stream?tab=1&message=evt2", queryPopup.getUrl());
+    assertEquals("/portal/dw/stream?tab=1&roomId=" + encodedRoomId + "&message=evt2",
+                 queryPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
+    assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device6").getUrl());
+    assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device7").getUrl());
+    assertEquals(defaultSiteUrl, builders.getAllValues().get(0).build("device8").getUrl());
+    PwaNotificationMessage otherRoomPopup = builders.getAllValues().get(0).build("device9");
+    assertEquals(defaultSiteUrl, otherRoomPopup.getUrl());
+    assertEquals(defaultSiteRoomUrl, otherRoomPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
+    // a parameter merely ending in roomId is not one: that home is kept
+    PwaNotificationMessage decoyPopup = builders.getAllValues().get(0).build("device10");
+    assertEquals("/portal/dw/stream?myroomId=1&message=evt2", decoyPopup.getUrl());
+    assertEquals("/portal/dw/stream?myroomId=1&roomId=" + encodedRoomId + "&message=evt2",
+                 decoyPopup.getData().get(PwaNotificationService.DIRECT_CLIENT_ACTION_URL_DATA));
+
+    // a read watermark cancels the pending fires it covers
+    when(matrixHttpClient.getEventById("evt3", roomId, accessToken))
+                                                                    .thenReturn(new MatrixMessage("evt3",
+                                                                                                  roomId,
+                                                                                                  "m.room.message",
+                                                                                                  "third message",
+                                                                                                  "m.text",
+                                                                                                  senderIdOnMatrix,
+                                                                                                  new ArrayList<>(),
+                                                                                                  3000L));
+    chatNotificationService.onMatrixPushReceived("evt3", roomId, "john", "pushKey");
+    chatNotificationService.clearPendingMessages("john", roomId, 3000L);
+    ArgumentCaptor<PwaDirectNotificationBuilder> allBuilders = ArgumentCaptor.forClass(PwaDirectNotificationBuilder.class);
+    verify(mockedPwaNotificationService, times(3)).scheduleDirectNotification(eq("john"), anyString(), anyLong(), allBuilders.capture());
+    assertNull(allBuilders.getAllValues().get(2).build("device1"));
+    assertNull(allBuilders.getAllValues().get(2).build("device2"));
+  }
+
+  @Test
+  void onMatrixPushReceivedDispatchesMention() throws Exception {
+    lenient().when(userStateModel.getStatus()).thenReturn("available");
+    lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
+    PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
+    ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
+    String eventId = "eventIDOnMatrix";
+    Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
+    matrixService.saveUserAccount(demoIdentity, true);
+    Identity tomIdentity = identityManager.getOrCreateUserIdentity("tom");
+    String tomIdOnMatrix = matrixService.saveUserAccount(tomIdentity, true);
+
+    Space space = getSpaceInstance(1);
+    spacesToDelete.add(space);
+    String roomId = matrixService.getRoomBySpace(space).getRoomId();
     MatrixMessage matrixMessage = new MatrixMessage(eventId,
                                                     roomId,
                                                     "m.room.message",
                                                     "This is a chat message",
                                                     "m.text",
-                                                    userIdOnMatrix,
-                                                    new ArrayList<>(),
+                                                    tomIdOnMatrix,
+                                                    // two mentions, the recipient first: every mention must
+                                                    // match, not only the last one of the message
+                                                    List.of("@demo:matrix.meeds.tn", "@tom:matrix.meeds.tn"),
                                                     123456789);
-    when(matrixHttpClient.getEventById(eventId, matrixRoomId, accessToken)).thenReturn(matrixMessage);
-    LocaleConfig localeConfig = new LocaleConfigImpl();
+    when(matrixHttpClient.getEventById(eventId, roomId, accessToken)).thenReturn(matrixMessage);
+
+    NotificationContext notificationContext = mock(NotificationContext.class);
+    NotificationExecutor notificationExecutor = mock(NotificationExecutor.class);
+    NotificationCommand notificationCommand = mock(NotificationCommand.class);
+    when(notificationContext.getNotificationExecutor()).thenReturn(notificationExecutor);
+    when(notificationContext.makeCommand(any(PluginKey.class))).thenReturn(notificationCommand);
+    when(notificationExecutor.with(notificationCommand)).thenReturn(notificationExecutor);
+    when(notificationExecutor.execute(notificationContext)).thenReturn(true);
+    try (MockedStatic<NotificationContextImpl> notificationContextImpl = mockStatic(NotificationContextImpl.class)) {
+      notificationContextImpl.when(NotificationContextImpl::cloneInstance).thenReturn(notificationContext);
+      chatNotificationService.onMatrixPushReceived(eventId, roomId, "demo", "pushKey");
+    }
+
+    // the mention was dispatched to the standard notification executor
+    // targeting the mention plugin (on-site and mail channels)
+    ArgumentCaptor<PluginKey> pluginKey = ArgumentCaptor.forClass(PluginKey.class);
+    verify(notificationContext, times(1)).makeCommand(pluginKey.capture());
+    assertEquals(MATRIX_MENTION_RECEIVED_NOTIFICATION_PLUGIN, pluginKey.getValue().getId());
+    verify(notificationContext).append(MATRIX_ROOM_MEMBER, "demo");
+    verify(notificationContext).append(MATRIX_ROOM_ID, roomId);
+    verify(notificationExecutor, times(1)).execute(notificationContext);
+    // and the message still schedules the room's deferred popup
+    verify(mockedPwaNotificationService, times(1)).scheduleDirectNotification(eq("demo"), anyString(), anyLong(), any());
+  }
+
+  @Test
+  void markRoomAsReadPostsReceiptRecordsWatermarkAndCancelsPopups() throws Exception {
+    lenient().when(userStateModel.getStatus()).thenReturn("available");
+    lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
+    PwaNotificationService mockedPwaNotificationService = mock(PwaNotificationService.class);
+    lenient().when(mockedPwaNotificationService.canReceiveDirectNotifications(anyString(), anyString())).thenReturn(true);
+    ReflectionTestUtils.setField(chatNotificationService, "pwaNotificationService", mockedPwaNotificationService);
+    LocaleConfigImpl localeConfig = new LocaleConfigImpl();
     localeConfig.setLocale(Locale.ENGLISH);
     localeConfig.setOrientation(Orientation.LT);
-    PwaNotificationMessage pwaNotificationMessage = chatNotificationService.createNotification(eventId,
-                                                                                               matrixRoomId,
-                                                                                               userName,
-                                                                                               0,
-                                                                                               accessToken);
-    assertNotNull(pwaNotificationMessage);
-    assertEquals("Demo exo in my space 1", pwaNotificationMessage.getTitle());
-    assertEquals("This is a chat message", pwaNotificationMessage.getBody());
+    lenient().when(mockedPwaNotificationService.getLocaleConfig(anyString())).thenReturn(localeConfig);
 
-    Room oneToOneRoom = new Room();
-    oneToOneRoom.setRoomId("!oneToOneRoom:matrix.meeds.tn");
-    oneToOneRoom.setFirstParticipant("demo");
-    oneToOneRoom.setSecondParticipant("tom");
-    oneToOneRoom = matrixService.createDirectMessagingRoom(oneToOneRoom);
+    // the buffer is service state shared by the tests of this class: start clean
+    ((java.util.Map<?, ?>) ReflectionTestUtils.getField(chatNotificationService, "pendingMessages")).clear();
+
+    // tom (manager) writes, demo (member) reads; john is not a member
     Identity tomIdentity = identityManager.getOrCreateUserIdentity("tom");
-    matrixMessage = new MatrixMessage(eventId,
-                                      oneToOneRoom.getRoomId(),
-                                      "m.room.message",
-                                      "This is a private chat message",
-                                      "m.text",
-                                      userIdOnMatrix,
-                                      new ArrayList<>(),
-                                      123456789);
-    when(matrixHttpClient.getEventById(eventId, oneToOneRoom.getRoomId(), accessToken)).thenReturn(matrixMessage);
-
-    pwaNotificationMessage = chatNotificationService.createNotification(eventId,
-                                                                        oneToOneRoom.getRoomId(),
-                                                                        userName,
-                                                                        0,
-                                                                        accessToken);
-    assertNotNull(pwaNotificationMessage);
-    assertNotNull(pwaNotificationMessage.getIcon());
-    assertEquals(tomIdentity.getProfile().getFullName(), pwaNotificationMessage.getTitle());
-    assertEquals("This is a private chat message", pwaNotificationMessage.getBody());
-  }
-
-  @Test
-  void createMentionNotification() throws Exception {
-    String eventId = "eventIDOnMatrix";
+    String senderIdOnMatrix = matrixService.saveUserAccount(tomIdentity, true);
     Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
-    String userIdOnMatrix = matrixService.saveUserAccount(demoIdentity, true);
-    MatrixMessage matrixMessage = new MatrixMessage(eventId,
-                                                    "fakeRoomId",
-                                                    "m.room.message",
-                                                    "This is a chat message",
-                                                    "m.text",
-                                                    userIdOnMatrix,
-                                                    Collections.singletonList("@demo:matrix.meeds.tn"),
-                                                    123456789);
-    when(matrixHttpClient.getEventById(eventId, matrixRoomId, accessToken)).thenReturn(matrixMessage);
-
-    boolean result = chatNotificationService.createMentionNotification(eventId, "fakeRoomId", "demo", null);
-    assertFalse(result);
-
-    Space space = getSpaceInstance(1);
+    matrixService.saveUserAccount(demoIdentity, true);
+    Space space = getSpaceInstance(5);
     spacesToDelete.add(space);
     String roomId = matrixService.getRoomBySpace(space).getRoomId();
-    matrixMessage.setRoomId(roomId);
+    when(matrixHttpClient.getEventById("evtRead", roomId, accessToken))
+                                                                       .thenReturn(new MatrixMessage("evtRead",
+                                                                                                     roomId,
+                                                                                                     "m.room.message",
+                                                                                                     "to be read",
+                                                                                                     "m.text",
+                                                                                                     senderIdOnMatrix,
+                                                                                                     new ArrayList<>(),
+                                                                                                     5000L));
+    chatNotificationService.onMatrixPushReceived("evtRead", roomId, "demo", "pushKey");
+    ArgumentCaptor<PwaDirectNotificationBuilder> builders = ArgumentCaptor.forClass(PwaDirectNotificationBuilder.class);
+    verify(mockedPwaNotificationService).scheduleDirectNotification(eq("demo"), anyString(), anyLong(), builders.capture());
 
-    result = chatNotificationService.createMentionNotification(eventId, roomId, "demo", null);
-    assertTrue(result);
+    // the popup carries the mark-as-read quick action
+    PwaNotificationMessage popup = builders.getValue().build("deviceA");
+    assertNotNull(popup);
+    assertEquals(1, popup.getActions().size());
+    assertEquals(ChatNotificationService.MARK_READ_ACTION, popup.getActions().get(0).getAction());
+    assertEquals("Mark as read", popup.getActions().get(0).getTitle());
 
-    Room room = new Room();
-    room.setRoomId("!privateRoomId");
-    room.setFirstParticipant("demo");
-    room.setSecondParticipant("raul");
-    room = matrixService.createDirectMessagingRoom(room);
-    matrixMessage.setRoomId(room.getRoomId());
+    // demo reads the room up to that event: receipt posted with demo's own token,
+    // watermark recorded, the room's pending popups cancelled for every device
+    when(matrixHttpClient.getAccessToken(anyString())).thenReturn("sys_demoUserAccessToken");
+    chatNotificationService.markRoomAsRead("demo", roomId, "evtRead", 5000L);
+    verify(matrixHttpClient).sendReadReceipt(eq(roomId), eq("evtRead"), eq("sys_demoUserAccessToken"));
+    verify(settingService).set(eq(Context.USER.id("demo")),
+                               eq(USER_CHAT_NOTIFICATION_SCOPE),
+                               eq(ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId),
+                               any());
+    assertNull(builders.getValue().build("deviceB"));
+    // no push follows a read: a popup on another device closes from the receipt
+    // that device gets through sync (a push showing nothing is a silent push)
+    // the emptied room buffer leaves the map
+    assertFalse(((java.util.Map<?, ?>) ReflectionTestUtils.getField(chatNotificationService, "pendingMessages")).containsKey("demo|"
+        + roomId));
 
-    result = chatNotificationService.createMentionNotification(eventId, room.getRoomId(), "demo", null);
-    assertFalse(result);
+    // the durable watermark alone cancels a fire (cluster / restart): a fresh
+    // buffer for the room, watermark stored past the message
+    chatNotificationService.onMatrixPushReceived("evtRead", roomId, "demo", "pushKey");
+    doReturn(SettingValue.create("9999")).when(settingService)
+                                          .get(Context.USER.id("demo"),
+                                               USER_CHAT_NOTIFICATION_SCOPE,
+                                               ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId);
+    verify(mockedPwaNotificationService, times(2)).scheduleDirectNotification(eq("demo"), anyString(), anyLong(), builders.capture());
+    assertNull(builders.getValue().build("deviceC"));
 
-    when(matrixHttpClient.getAccessToken(anyString())).thenReturn("sys_thisIsAFakeAccessToken2025");
-    when(matrixHttpClient.getEventById(eventId, room.getRoomId(), "sys_thisIsAFakeAccessToken2025")).thenReturn(matrixMessage);
-    String userAsJson = """
-        {
-            "name": "@raul:matrix.meeds.tn",
-            "displayname": "Raul Hamdi", // can be null if not set
-            "threepids": [
-                {
-                    "medium": "email",
-                    "address": "raul@platform.com",
-                    "added_at": 1586458409743,
-                    "validated_at": 1586458409743
-                },
-            ],
-        }
-        """;
-    when(matrixHttpClient.getUser(anyString(), anyString())).thenReturn(userAsJson);
-    result = chatNotificationService.createMentionNotification(eventId, room.getRoomId(), "demo", "ASamplePushKey");
-    assertTrue(result);
-  }
-
-  @Test
-  void sendPushNotification() throws ObjectNotFoundException, IllegalAccessException {
-    NotificationInfo notificationInfo = NotificationInfo.instance()
-                                                        .setFrom("raul")
-                                                        .to("demo")
-                                                        .with("ROOM_ID", "!roomIdenitfier:matrix.meeds.tn")
-                                                        .with("MATRIX_ROOM_NAME", "Sample room")
-                                                        .with("MATRIX_ROOM_TYPE", "SPACE")
-                                                        .with("MATRIX_SENDER_FULL_NAME", "Raul Hamdi")
-                                                        .with("MATRIX_ROOM_AVATAR", "/path/to/room")
-                                                        .with("MATRIX_MESSAGE_URL", "/link/to/room/message")
-                                                        .with("MATRIX_MESSAGE_CONTENT", "This is a message for testing !")
-                                                        .key(MATRIX_MENTION_RECEIVED_NOTIFICATION_PLUGIN)
-                                                        .end();
-    webNotificationService.save(notificationInfo);
-    WebNotificationFilter filter = new WebNotificationFilter("demo");
-    List<NotificationInfo> notifications = webNotificationService.getNotificationInfos(filter, 0, 10);
-    for (NotificationInfo notif : notifications) {
-      PwaNotificationMessage pwaNotificationMessage = pwaNotificationService.getNotification(1L, "demo");
-      assertNotNull(pwaNotificationMessage);
-      assertEquals("Raul Hamdi mentioned you in Sample room", pwaNotificationMessage.getTitle());
-      assertEquals("This is a message for testing !", pwaNotificationMessage.getBody());
-    }
-  }
-
-  @Test
-  void isPushNotificationsEnabled() {
-    when(settingService.get(Context.USER.id("demo"), USER_CHAT_NOTIFICATION_SCOPE, PUSH_NOTIFICATIONS_SETTINGS)).thenReturn(null);
-    boolean result = chatNotificationService.isPushNotificationsEnabled("demo");
-    assertTrue(result);
-  }
-
-  @Test
-  void updatePushNotificationSettings() {
-    chatNotificationService.updatePushNotificationSettings("demo", true);
-    verify(settingService, times(1)).set(eq(Context.USER.id("demo")),
+    // a client timestamp in the future is clamped to now
+    doReturn(null).when(settingService)
+                  .get(Context.USER.id("demo"),
+                       USER_CHAT_NOTIFICATION_SCOPE,
+                       ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId);
+    chatNotificationService.markRoomAsRead("demo", roomId, "evtRead", Long.MAX_VALUE);
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    ArgumentCaptor<SettingValue<?>> saved = ArgumentCaptor.forClass((Class) SettingValue.class);
+    verify(settingService, times(2)).set(eq(Context.USER.id("demo")),
                                          eq(USER_CHAT_NOTIFICATION_SCOPE),
-                                         eq(PUSH_NOTIFICATIONS_SETTINGS),
-                                         any());
+                                         eq(ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId),
+                                         saved.capture());
+    assertTrue(Long.parseLong(String.valueOf(saved.getValue().getValue())) <= System.currentTimeMillis());
+
+    // no receipt posted (user without Matrix account): nothing is marked read
+    when(matrixHttpClient.getAccessToken(anyString())).thenReturn(null);
+    ((org.exoplatform.services.cache.ExoCache<?, ?>) ReflectionTestUtils.getField(matrixService, "userAccessTokensCache")).clearCache();
+    assertThrows(IllegalStateException.class,
+                 () -> chatNotificationService.markRoomAsRead("demo", roomId, "evtRead", null));
+
+    // guards of the read anchor
+    assertThrows(ObjectNotFoundException.class,
+                 () -> chatNotificationService.markRoomAsRead("demo", "!unknown:matrix.meeds.tn", "evt", null));
+    assertThrows(IllegalAccessException.class,
+                 () -> chatNotificationService.markRoomAsRead("john", roomId, "evtRead", null));
+    assertThrows(IllegalArgumentException.class, () -> chatNotificationService.markRoomAsRead("demo", roomId, "", null));
+  }
+
+  @Test
+  void markRoomAsReadTakesTheWatermarkFromTheEventNotTheCaller() throws Exception {
+    lenient().when(userStateModel.getStatus()).thenReturn("available");
+    lenient().when(userSetting.isSpaceMuted(anyLong())).thenReturn(false);
+    ((java.util.Map<?, ?>) ReflectionTestUtils.getField(chatNotificationService, "pendingMessages")).clear();
+    Identity demoIdentity = identityManager.getOrCreateUserIdentity("demo");
+    matrixService.saveUserAccount(demoIdentity, true);
+    Space space = getSpaceInstance(6);
+    spacesToDelete.add(space);
+    String roomId = matrixService.getRoomBySpace(space).getRoomId();
+    when(matrixHttpClient.getAccessToken(anyString())).thenReturn("sys_demoUserAccessToken");
+    ((org.exoplatform.services.cache.ExoCache<?, ?>) ReflectionTestUtils.getField(matrixService,
+                                                                                 "userAccessTokensCache")).clearCache();
+    // the event is read back with the user's own token: its origin_server_ts is
+    // on the same clock as the buffered messages the watermark is compared to,
+    // where the caller's timestamp is the platform's and may be minutes off
+    when(matrixHttpClient.getEventById("evtRead", roomId, "sys_demoUserAccessToken"))
+                                                                                     .thenReturn(new MatrixMessage("evtRead",
+                                                                                                                   roomId,
+                                                                                                                   "m.room.message",
+                                                                                                                   "read me",
+                                                                                                                   "m.text",
+                                                                                                                   "@tom:matrix.meeds.tn",
+                                                                                                                   new ArrayList<>(),
+                                                                                                                   7000L));
+    doReturn(null).when(settingService)
+                  .get(Context.USER.id("demo"),
+                       USER_CHAT_NOTIFICATION_SCOPE,
+                       ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId);
+    chatNotificationService.markRoomAsRead("demo", roomId, "evtRead", 1L);
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    ArgumentCaptor<SettingValue<?>> saved = ArgumentCaptor.forClass((Class) SettingValue.class);
+    verify(settingService).set(eq(Context.USER.id("demo")),
+                               eq(USER_CHAT_NOTIFICATION_SCOPE),
+                               eq(ChatNotificationService.READ_WATERMARK_KEY_PREFIX + roomId),
+                               saved.capture());
+    assertEquals("7000", String.valueOf(saved.getValue().getValue()));
+  }
+
+  @Test
+  void mentionNotificationsAreExcludedFromPush() {
+    // ChatPushNotificationIntegration registers the mention plugin as excluded
+    // from the generic PWA push pipeline: mentions keep on-site and mail
+    // channels, the push popup stays the room's deferred one
+    assertTrue(pwaNotificationService.isPluginExcludedFromPush(MATRIX_MENTION_RECEIVED_NOTIFICATION_PLUGIN));
   }
 
   @Test

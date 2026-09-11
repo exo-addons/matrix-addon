@@ -408,8 +408,10 @@ async function handleReadReceiptEvent(event, roomId) {
       }));
 
       if (userId === matrixUserId && readData.thread_id) {
-        const isLast = isLastMessageInRoom(eventId, roomId);
-        if (isLast) {
+        // the room was read here or on another device: the popups this device
+        // still displays for messages up to that point are stale
+        closeRoomPopups(roomId, exists.origin_server_ts ?? newTimestamp);
+        if (isRoomReadUpTo(eventId, exists.origin_server_ts, roomId)) {
           document.dispatchEvent(new CustomEvent('matrix-room-mark-full-read', {
             detail: { roomId }
           })
@@ -444,11 +446,31 @@ export async function loadLastReadReceipts(roomId) {
   return await dbStorage.getValue(dbSettings, receiptsStore, storeKey) || {};
 }
 
-function isLastMessageInRoom(eventId, roomId) {
-  if (!lastMessagesByRoom) {
+/**
+ * Whether a read receipt of the current user leaves nothing unread in a room:
+ * the read event is the room's last message, or is after it, or that last
+ * message is the user's own new message — sending it proved the room was read
+ * (an edit of an old message of theirs proves nothing). The
+ * receipt of a read done before a reply reaches this page after the reply (the
+ * timeline of a sync response is processed before its receipts), so matching
+ * the last event alone would leave the room unread.
+ *
+ * @param {string} eventId event the receipt points at
+ * @param {number} readTimestamp origin_server_ts of that event, when known
+ * @param {string} roomId Matrix room id
+ * @returns {boolean} true when the room counts as fully read
+ */
+function isRoomReadUpTo(eventId, readTimestamp, roomId) {
+  const lastMessage = lastMessagesByRoom?.get(roomId);
+  if (!lastMessage) {
     return false;
   }
-  return lastMessagesByRoom.get(roomId)?.event_id === eventId;
+  // an edited last message is stored under the original's id: its receipt
+  // points at the edit event
+  return lastMessage.event_id === eventId
+    || lastMessage.replacementEventId === eventId
+    || (lastMessage.sender === matrixUserId && !lastMessage.edited)
+    || (!!readTimestamp && !!lastMessage.origin_server_ts && readTimestamp > lastMessage.origin_server_ts);
 }
 
 export function toRoomObject(rooms, currentMemberId) {
@@ -1486,6 +1508,20 @@ export function sendMessage(payload, roomId) {
   });
 }
 
+/**
+ * Marks a room as read up to an event through the platform — the one read
+ * anchor: the server posts the Matrix receipt with the user's identity and
+ * records the read watermark (the platform's clock, assumed in sync with the
+ * Matrix server's) that cancels the pending push popups. Every client converges
+ * through sync; the popups displayed on the other devices close when the
+ * user's own receipt reaches them (see closeRoomPopups).
+ *
+ * @param {string} roomId Matrix room id (server name appended when missing)
+ * @param {string} eventId event read up to (high-water mark)
+ * @returns {Promise<boolean>} true when the room was marked read, false when
+ *          nothing identifies it; rejects when the server refused, so a
+ *          caller never shows a read state the server did not record
+ */
 export async function markRoomAsFullyRead(roomId, eventId) {
   if (!roomId || !eventId) {
     return false;
@@ -1495,28 +1531,35 @@ export async function markRoomAsFullyRead(roomId, eventId) {
     roomId = `${roomId}:${matrixServerName}`;
   }
 
-  const accessToken = localStorage.getItem('matrix_access_token');
-  if (!accessToken) {
-    console.warn('No Matrix access token found');
-    return false;
-  }
-
-  const readReceiptUrl = `/_matrix/client/v3/rooms/${roomId}/receipt/m.read/${eventId}`;
-  const receiptPayload = { thread_id: 'main' };
-
-  const receiptResp = await fetch(readReceiptUrl, {
+  const resp = await fetch(`/matrix/rest/matrix/rooms/${encodeURIComponent(roomId)}/read?eventId=${encodeURIComponent(eventId)}`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(receiptPayload)
+    credentials: 'include',
   });
-
-  if (!receiptResp.ok) {
-    console.error('Failed to send m.read receipt', await receiptResp.text());
-    return false;
+  if (!resp.ok) {
+    throw new Error(`Failed to mark the room as read: HTTP ${resp.status}`);
   }
+  closeRoomPopups(roomId);
+  return true;
+}
+
+/**
+ * Closes the push popups of a room displayed on this device, up to a read
+ * timestamp. A read on another device reaches this page through the user's own
+ * receipt in the sync stream, so no push is ever needed to take a popup down —
+ * a push that shows nothing is a "silent push" the browsers ration (Safari
+ * revokes the subscription after three).
+ *
+ * @param {string} roomId Matrix room id (the popup tag)
+ * @param {number} [upToTimestamp] close only the popups whose latest covered
+ *        message is at or before it; everything of the room when omitted
+ */
+function closeRoomPopups(roomId, upToTimestamp) {
+  navigator.serviceWorker?.ready
+    ?.then(registration => registration.getNotifications({ tag: roomId }))
+    .then(notifications => notifications
+      .filter(notification => !upToTimestamp || !notification?.data?.ts || Number(notification.data.ts) <= upToTimestamp)
+      .forEach(notification => notification.close()))
+    .catch(() => undefined);
 }
 
 export async function getRoomLastMessageEventId(roomId) {
@@ -2459,14 +2502,8 @@ export function getMatrixIdOfUser(userId) {
 }
 
 export async function markMessageAsRead(roomId, eventId) {
-  await fetch(`/_matrix/client/v3/rooms/${roomId}/receipt/m.read/${eventId}`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${localStorage.getItem('matrix_access_token')}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({})
-  });
+  // same read anchor as reading the room: a sent message is read by its author
+  await markRoomAsFullyRead(roomId, eventId);
 }
 
 export async function populateUnseenSectionData(roomId, event, content) {

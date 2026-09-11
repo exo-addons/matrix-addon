@@ -31,7 +31,6 @@ import io.meeds.chat.service.ChatNotificationService;
 import io.meeds.chat.service.MatrixSynchronizationService;
 import io.meeds.chat.service.utils.AsyncTaskUtils;
 import io.meeds.chat.service.model.*;
-import io.meeds.pwa.model.PwaNotificationMessage;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.parameters.RequestBody;
@@ -227,11 +226,6 @@ public class MatrixRest implements ResourceContainer {
                 """.formatted(pushKey);
           }
           if (StringUtils.isNotBlank(userName)) {
-            int unreadCount = 0;
-            JsonValue element = notifJsonValue.getElement("counts");
-            if (element != null && element.getElement("unread") != null) {
-              unreadCount = element.getElement("unread").getIntValue();
-            }
             String roomId = "";
             if (notifJsonValue.getElement("room_id") != null) {
               roomId = notifJsonValue.getElement("room_id").getStringValue();
@@ -240,9 +234,8 @@ public class MatrixRest implements ResourceContainer {
             if (notifJsonValue.getElement("event_id") != null) {
               eventId = notifJsonValue.getElement("event_id").getStringValue();
             }
-            if(StringUtils.isNotBlank(eventId) && StringUtils.isNotBlank(roomId)) {
-              chatNotificationService.createMentionNotification(eventId, roomId, userName, pushKey);
-              chatNotificationService.sendCreateNotificationAction(eventId, userName, roomId, unreadCount);
+            if (StringUtils.isNotBlank(eventId) && StringUtils.isNotBlank(roomId)) {
+              chatNotificationService.onMatrixPushReceived(eventId, roomId, userName, pushKey);
             }
           }
         }
@@ -629,41 +622,6 @@ public class MatrixRest implements ResourceContainer {
     }
   }
 
-  @PutMapping("notification/{roomId}/{eventId}/{ts}")
-  @Secured("users")
-  @Operation(summary = "Get the details of a notification based on the event details", method = "GET", description = "Get the details of a notification based on the event details")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "404", description = "User not found"),
-      @ApiResponse(responseCode = "500", description = "Internal server error") })
-  public PwaNotificationMessage getNotification(HttpServletRequest request, @PathVariable("roomId")
-  String roomId, @PathVariable("eventId")
-  String eventId, @PathVariable("ts")
-  String timeStamp,
-                                                @RequestBody(description = "Access token of the user", required = false)
-                                                @org.springframework.web.bind.annotation.RequestBody(required = false)
-                                                String accessToken) {
-    String currentUserName = request.getRemoteUser();
-    if (eventId == null) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "event id is mandatory");
-    }
-    long ts = 0L;
-    try {
-      ts = Long.parseLong(timeStamp);
-    } catch (NumberFormatException nfe) {
-      // Do nothing, we consider Timestamp as 0 //NOSONAR
-    }
-    PwaNotificationMessage pwaMessage = chatNotificationService.createNotification(eventId,
-                                                                                   roomId,
-                                                                                   currentUserName,
-                                                                                   ts,
-                                                                                   accessToken);
-    if (pwaMessage != null) {
-      return pwaMessage;
-    } else {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Event not found or it is not a chat message");
-    }
-  }
-
   @PostMapping("/muteRoom")
   @Secured("users")
   @Operation(summary = "Mute a private room for the current user", description = "Adds a private room to the user's muted list")
@@ -688,51 +646,33 @@ public class MatrixRest implements ResourceContainer {
     }
   }
 
-  @GetMapping("/isPushNotificationsEnabled/{userName}")
+  @PostMapping("rooms/{roomId}/read")
   @Secured("users")
-  @Operation(summary = "Get the status of push notifications enabled/disabled", method = "GET", description = "Get the status of push notifications enabled/disabled")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "username is not provided"),
-      @ApiResponse(responseCode = "403", description = "Unauthorized to access information"),
-      @ApiResponse(responseCode = "500", description = "Internal server error") })
-  public ResponseEntity<String> isPushNotificationsEnabled(HttpServletRequest request, @PathVariable("userName")
-  String userName) {
-    if (StringUtils.isBlank(userName)) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The username parameter is required");
-    }
-    if (!request.getRemoteUser().equals(userName)) {
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Can not check the settings of another user");
-    }
-
-    return ResponseEntity.ok().body(String.valueOf(chatNotificationService.isPushNotificationsEnabled(userName)));
-  }
-
-  @PostMapping("/enablePushNotificationsSettings")
-  @Secured("users")
-  @Operation(summary = "Change the status of push notifications enabled/disabled", method = "POST", description = "Change the status of push notifications enabled/disabled")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "403", description = "Unauthorized to access information"),
-      @ApiResponse(responseCode = "500", description = "Internal server error") })
-  public ResponseEntity<String> updatePushNotificationsSettings(HttpServletRequest request,
-                                                                @RequestBody(description = "Notification received from Matrix", required = true)
-                                                                @org.springframework.web.bind.annotation.RequestBody
-                                                                String pushNotificationSetting) {
+  @Operation(summary = "Marks a room as read up to an event for the current user", method = "POST",
+             description = "Server-side read anchor: posts the Matrix read receipt with the user's identity, records the read watermark and cancels the pending push popups")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Room marked as read"),
+      @ApiResponse(responseCode = "400", description = "Invalid parameters"),
+      @ApiResponse(responseCode = "403", description = "Not a member of the room"),
+      @ApiResponse(responseCode = "404", description = "Room not found"),
+      @ApiResponse(responseCode = "500", description = "The Matrix read receipt could not be posted (matrix.markRoomAsRead.receiptNotPosted): nothing was marked read") })
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void markRoomAsRead(HttpServletRequest request,
+                             @PathVariable("roomId")
+                             String roomId,
+                             @RequestParam("eventId")
+                             String eventId,
+                             @RequestParam(value = "ts", required = false)
+                             Long readTimestamp) {
     try {
-      JsonGeneratorImpl jsonGenerator = new JsonGeneratorImpl();
-      JsonValue jsonValue = jsonGenerator.createJsonObjectFromString(pushNotificationSetting);
-      JsonValue userNameJsonValue = jsonValue.getElement("userName");
-      if (userNameJsonValue == null
-          || userNameJsonValue.getStringValue() != null && !request.getRemoteUser().equals(userNameJsonValue.getStringValue())) {
-        return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                             .body("Check the status of Push notifications of another user is forbidden");
-      }
-      String userName = userNameJsonValue.getStringValue();
-      boolean pushNotificationStatus = jsonValue.getElement("active") != null && jsonValue.getElement("active").getBooleanValue();
-      chatNotificationService.updatePushNotificationSettings(userName, pushNotificationStatus);
-      return ResponseEntity.ok().body("{}");
-    } catch (Exception e) {
-      LOG.error("Could not update the status of Push notifications of {}", e);
-      return ResponseEntity.internalServerError().build();
+      chatNotificationService.markRoomAsRead(request.getRemoteUser(), roomId, eventId, readTimestamp);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 

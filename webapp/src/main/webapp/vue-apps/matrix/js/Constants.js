@@ -23,6 +23,11 @@ export const chatConstants = {
   // Static String for action names
   ACTION_OPEN_CHAT_ROOM: 'meeds-chat-open-room',
 
+  // Client action carried by the chat push popups (the pwa service worker
+  // forwards it to the focused page on click): detail = the popup data, with
+  // `roomId`. Handled from the quick-actions bundle, present on every page.
+  ACTION_OPEN_CHAT_ROOM_FROM_PUSH: 'meeds-chat-open-room-from-push',
+
   // How an add-on outside this webapp puts something into a conversation. The
   // event carries EITHER { file } (a File, for content that exists nowhere else
   // — a generated card, a recording) OR { link: {url, title} } (for content that
